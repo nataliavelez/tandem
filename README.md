@@ -4,3 +4,13 @@ Natalia Vélez, June 2023
 This repository provides a basic template for online multiplayer games. This demo experiment is built upon a websocket-based server architecture in the back-end and uses React to manage the front-end. 
 
 Rather than abstracting away the details of the back-end, the goal of this template is to provide a minimal working example of how to write a multiplayer experiment from scratch. The code throughout this repository explains basic principles involved in writing code for multiplayer games and includes links to further tutorials and resources. If other tools on offer promise to work like cars - allowing users to push a button and start running an experiment without thinking about the details of the back-end - this template works as a bicycle. It's lighter and less powerful than other tools - but because its inner mechanisms are exposed, it is also infinitely easier to customize, tinker with and repair.
+
+Status: Under construction
+
+To-do list (NV):
+
+[ ] Loose end: Initialize player state correctly
+[ ] Minimal TrialEngine implementation
+[ ] Build boilerplate: consent form, GDPR notice, survey form, debriefing page
+[ ] Set up postgreSQL database
+[ ] Test data saving
