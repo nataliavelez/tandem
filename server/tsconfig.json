@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "esnext",                        // Modern JS features
+    "module": "CommonJS",                      // Node.js module system
+    "outDir": "./dist",                        // Compiled output
+    "rootDir": "../",                        // Source files live here
+    "strict": true,                            // All strict type-checking
+    "esModuleInterop": true,                   // Allow CommonJS <-> ES module interop
+    "forceConsistentCasingInFileNames": true,
+    "moduleResolution": "node",
+    "skipLibCheck": true,
+    "baseUrl": ".",                            // Enables absolute paths
+    "paths": {
+      "@shared/*": ["shared/*"]             // Map shared imports
+    }
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist"]
+}

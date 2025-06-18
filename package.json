@@ -1,0 +1,22 @@
+{
+  "name": "colab_tandem",
+  "version": "1.0.0",
+  "description": "Natalia Vélez, June 2023",
+  "main": "index.js",
+  "scripts": {
+    "dev:client": "npm run dev --prefix client",
+    "dev:server": "ts-node-dev server/src/index.ts",
+    "dev": "concurrently \"npm run dev:client\" \"npm run dev:server\"",
+    "test": "vitest",
+    "test:ui": "vitest --ui"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@vitest/ui": "^3.2.4",
+    "concurrently": "^9.1.2",
+    "ts-node": "^10.9.2",
+    "vitest": "^3.2.4"
+  }
+}
