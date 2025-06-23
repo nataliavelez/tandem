@@ -1,5 +1,5 @@
 // The type of a trial – you can add more as needed
-export type TrialType = "consent" | "display" | "instructions" | "quiz" | "waiting-room" | "rapport" | "grid-interaction" | "quiz" | "survey";
+export type TrialType = "consent" | "display" | "instructions" | "quiz" | "waiting-room" | "chat" | "gridworld" | "quiz" | "survey";
 
 // Common configuration fields shared by all trials
 interface BaseTrialConfig {
@@ -46,13 +46,13 @@ export interface WaitingTrialConfig extends BaseTrialConfig {
   maxParticipants: number; // max number of participants to wait for
 }
 
-export interface RapportTrialConfig extends BaseTrialConfig {
-    type: "rapport";
+export interface ChatTrialConfig extends BaseTrialConfig {
+    type: "chat";
 }
 
 // Specialized config for an interactive grid trial
-export interface GridTrialConfig extends BaseTrialConfig {
-  type: "grid-interaction";
+export interface GridworldTrialConfig extends BaseTrialConfig {
+  type: "gridworld";
   round: number; // round number for this trial
   condition: string;
 }
@@ -69,8 +69,8 @@ export type TrialConfig =
     | InstructionTrialConfig 
     | QuizTrialConfig
     | WaitingTrialConfig
-    | RapportTrialConfig   
-    | GridTrialConfig 
+    | ChatTrialConfig   
+    | GridworldTrialConfig 
     | SurveyTrialConfig;
 
 // A timeline is just an array of trials
