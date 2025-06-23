@@ -9,7 +9,6 @@ Status: Under construction
 
 To-do list (NV):
 
-[ ] Loose end: Initialize player state correctly
 [ ] Minimal TrialEngine implementation
 [ ] Build boilerplate: consent form, GDPR notice, survey form, debriefing page
 [ ] Set up postgreSQL database

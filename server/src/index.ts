@@ -3,11 +3,11 @@ import { v4 as uuidv4 } from "uuid";
 import { ConnectedPlayer } from "../types";
 import {
   GameState,
-  PlayerState,
   ClientEvent,
   ServerEvent,
 } from "../../shared/types";
 import { applyClientEvent } from "./game/engine";
+import { findUnoccupiedPosition } from "./game/map";
 import { createInitialGameState } from "./game/state";
 
 
@@ -17,29 +17,33 @@ let gameState: GameState = createInitialGameState();
 
 wss.on("connection", (socket) => {
   const id = uuidv4();
-  type ConnectedPlayer = {
-        id: string;
-        socket: WebSocket;
-        lastSeen: number;
-        roomId: string;
-    };
-    
-    const player: ConnectedPlayer = {
-        id,
-        socket,
-        lastSeen: Date.now(),
-        roomId: "default",
-    };
+
+  const player: ConnectedPlayer = {
+    id,
+    socket,
+    lastSeen: Date.now(),
+    roomId: "default",
+  };
 
   players[id] = player;
 
   // Initialize player state in game
-  gameState.players[id] = { id, position: { x: 0, y: 0 }, connected: true };
+  const startPos = findUnoccupiedPosition(gameState);
+  gameState.players[id] = { id, position: startPos, connected: true };
 
+  // Send the player's unique ID to the client
+  socket.send(JSON.stringify({ type: "ASSIGN_ID", id }));
+
+  // Immediately send the current game state to the newly connected player
+  const initialMessage: ServerEvent = {
+    type: "STATE_UPDATE",
+    state: gameState,
+  };
+  socket.send(JSON.stringify(initialMessage));
   console.log(`Player ${id} connected.`);
 
   socket.on("message", (data) => {
-     const message: ClientEvent = JSON.parse(data.toString());
+    const message: ClientEvent = JSON.parse(data.toString());
     gameState = applyClientEvent(gameState, id, message);
     broadcastState();
   });

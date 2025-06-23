@@ -31,6 +31,7 @@ export type ClientEvent =
 // Server → Client messages
 export type ServerEvent =
   | { type: "PLAYER_JOINED"; playerId: string; playerName: string; roomId: string }
+  | { type: "ASSIGN_ID"; id: PlayerID }
   | { type: "BROADCAST_MESSAGE"; message: string; from?: string }
   | { type: "STATE_UPDATE"; state: GameState }
   | { type: "PLAYER_LEFT"; playerId: PlayerID }
