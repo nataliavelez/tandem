@@ -14,6 +14,7 @@ export interface DisplayTrialConfig extends BaseTrialConfig {
     text: string; // text to display in the trial
     image?: string; // optional image URL to display
     continueDelay?: number; // optional delay before allowing to continue
+    _delayElapsed?: number; // timestamp when continue button can be clicked
 }
 
 export interface ConsentTrialConfig extends BaseTrialConfig {

@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import type { ClientEvent, ServerEvent, GameState } from "../../shared/types";
-import { GameBoard } from "./components/GameBoard";
+import { GameBoard } from "./components/ui/GameBoard";
 
 function App() {
   const [state, setState] = useState<GameState | null>(null);
