@@ -11,17 +11,32 @@ export const SocketProvider = ({ children }: { children: React.ReactNode }) => {
     const socket = new WebSocket("ws://localhost:8080");
     socketRef.current = socket;
 
-    socket.onopen = () => console.log("Connected to server");
+    socket.onopen = () => {
+      console.log("Connected to server");
+      console.log("Socket ref in SocketProvider:", socketRef.current);
+    };
 
-    socket.onmessage = (event) => {
+    socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
       if (message.type === "ASSIGN_ID") {
         setPlayerId(message.id);
         console.log(`Assigned player ID: ${message.id}`);
       }
+    });
+
+    socket.onerror = (err) => {
+      console.error("WebSocket error:", err);
     };
 
-    socket.onclose = () => console.log("Disconnected from server");
+    socket.onclose = (event) => {
+      console.warn(
+        "WebSocket closed:",
+        event.code,
+        event.reason,
+        event.wasClean
+      );
+      console.log("Disconnected from server");
+    };
   }, []);
 
   return (

@@ -10,7 +10,7 @@ export function ConsentForm({ onNext }: Props) {
     <div>
       <h2>Consent Form</h2>
       <p>This is the CoLab consent form.</p>
-      <button onClick={onNext} disabled={true}>
+      <button onClick={onNext} disabled={false}>
         Continue
       </button>
     </div>

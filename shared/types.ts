@@ -24,6 +24,7 @@ export interface GameState {
 
 // Client → Server events
 export type ClientEvent =
+  | { type: "JOIN_ROOM"; roomId: RoomID }
   | { type: "PLAYER_WAITING"; playerId: string }
   | { type: "TRIAL_READY"; trialId: string; duration: number }
   | { type: "SEND_CHAT"; message: string }

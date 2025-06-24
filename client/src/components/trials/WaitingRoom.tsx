@@ -9,21 +9,33 @@ type Props = {
 };
 
 export function WaitingRoom({ config, onReady }: Props) {
-  const { socket } = useSocket();
+  const { socket, playerId } = useSocket();
   const [state, setState] = useState<GameState | null>(null);
 
   useEffect(() => {
-    if (!socket) return;
+    if (!socket || socket.readyState !== WebSocket.OPEN || !playerId) {
+      // Wait until socket is open and playerId is set
+      return;
+    }
+
+    // Send JOIN_ROOM message once on mount (or when socket/playerId change)
+    socket.send(JSON.stringify({
+      type: "JOIN_ROOM",
+      roomId: "default",
+    }));
 
     const handleMessage = (event: MessageEvent) => {
       const message: ServerEvent = JSON.parse(event.data);
+      console.log("Received message:", message);
 
       if (message.type === "STATE_UPDATE") {
+        console.log("Received state update:", message.state);
         setState(message.state);
 
-        if (
-          Object.keys(message.state.players).length >= config.maxParticipants
-        ) {
+        const playerCount = Object.keys(message.state.players).length;
+        console.log("Current players:", playerCount);
+
+        if (playerCount >= config.maxParticipants) {
           onReady();
         }
       }
@@ -34,7 +46,7 @@ export function WaitingRoom({ config, onReady }: Props) {
     return () => {
       socket.removeEventListener("message", handleMessage);
     };
-  }, [socket, config.maxParticipants, onReady]);
+  }, [socket, playerId, config.maxParticipants, onReady]);
 
   return (
     <div style={{ padding: 20 }}>
