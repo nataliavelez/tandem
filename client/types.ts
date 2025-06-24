@@ -59,7 +59,6 @@ export interface GridworldTrialConfig extends BaseTrialConfig {
   round: number; // round number for this trial
   condition: string;
   duration: number; // max time in ms for this round
-  roomId: string | undefined; // room ID for multiplayer trials
 }
 
 // Post-test survey

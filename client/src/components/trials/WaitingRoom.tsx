@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { WaitingTrialConfig } from "client-types";
 import type { ServerEvent, GameState } from "shared/types";
 import { useSocket } from "../../hooks/useSocket";
+import { useRoom } from "../../hooks/useRoom";
 
 type Props = {
   config: WaitingTrialConfig;
@@ -10,6 +11,7 @@ type Props = {
 
 export function WaitingRoom({ config, onReady }: Props) {
   const { socket, playerId } = useSocket();
+  const { roomId, setRoomId } = useRoom();
   const [state, setState] = useState<GameState | null>(null);
 
   useEffect(() => {
@@ -19,10 +21,12 @@ export function WaitingRoom({ config, onReady }: Props) {
     }
 
     // Send JOIN_ROOM message once on mount (or when socket/playerId change)
-    socket.send(JSON.stringify({
-      type: "JOIN_ROOM",
-      roomId: "default",
-    }));
+    socket.send(
+      JSON.stringify({
+        type: "JOIN_ROOM",
+        roomId: roomId 
+      })
+    );
 
     const handleMessage = (event: MessageEvent) => {
       const message: ServerEvent = JSON.parse(event.data);
@@ -46,7 +50,17 @@ export function WaitingRoom({ config, onReady }: Props) {
     return () => {
       socket.removeEventListener("message", handleMessage);
     };
-  }, [socket, playerId, config.maxParticipants, onReady]);
+  }, [socket, playerId, roomId, config.maxParticipants, onReady]);
+
+  useEffect(() => {
+    if (socket && playerId) {
+      // Will set dynamically later
+      const room = "default";
+      setRoomId(room);
+
+      socket.send(JSON.stringify({ type: "JOIN_ROOM", roomId: room }));
+    }
+  }, [socket, playerId, setRoomId]);
 
   return (
     <div style={{ padding: 20 }}>

@@ -1,12 +1,15 @@
+import { RoomProvider } from "./context/RoomProvider";
 import { SocketProvider } from "./context/SocketProvider";
 import { TrialEngine } from "./components/engine/TrialEngine";
 import { expTimeline } from "./scripts/expTimeline";
 
 function App() {
   return (
-    <SocketProvider>
-      <TrialEngine timeline={expTimeline} />
-    </SocketProvider>
+    <RoomProvider>
+      <SocketProvider>
+        <TrialEngine timeline={expTimeline} />
+      </SocketProvider>
+    </RoomProvider>
   );
 }
 
