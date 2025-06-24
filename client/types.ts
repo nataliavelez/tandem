@@ -56,6 +56,7 @@ export interface GridworldTrialConfig extends BaseTrialConfig {
   type: "gridworld";
   round: number; // round number for this trial
   condition: string;
+  duration: number; // max time in ms for this round
 }
 
 // Post-test survey

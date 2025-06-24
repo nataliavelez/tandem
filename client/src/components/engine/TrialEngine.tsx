@@ -1,7 +1,8 @@
 import { useState } from "react";
-import type { TrialTimeline, TrialConfig } from "../../types";
-import { ConsentForm } from "./trials/Consent";
-import { WaitingRoom } from "./trials/WaitingRoom";
+import type { TrialTimeline, TrialConfig } from "client-types";
+import { ConsentForm } from "../trials/Consent";
+import { WaitingRoom } from "../trials/WaitingRoom";
+import { GridworldTrial } from "../trials/GridworldTrial";
 // import { PostTest } from "./PostTest";
 
 type Props = {
@@ -29,6 +30,11 @@ export function TrialEngine({ timeline }: Props) {
     case "consent":
       return (
         <ConsentForm config={currentTrial} onNext={advance} />
+      );
+
+    case "gridworld":
+      return (
+        <GridworldTrial config={currentTrial} onNext={advance} />
       );
 
     // case "post-test":

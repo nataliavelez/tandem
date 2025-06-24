@@ -21,3 +21,5 @@ const expTimeline : TrialTimeline = [
         "type": "survey"
     }
 ];
+
+export { expTimeline };

@@ -9,7 +9,8 @@ Status: Under construction
 
 To-do list (NV):
 
-[ ] Minimal TrialEngine implementation
-[ ] Build boilerplate: consent form, GDPR notice, survey form, debriefing page
-[ ] Set up postgreSQL database
-[ ] Test data saving
+* **Next up: Set up a server-side timer to advance multiplayer trials** -> gridworld trials are currently broken
+* Test basic trial flow: consent (solo) -> waiting room (multi) -> game (multi) -> debrief (solo)
+* Build boilerplate: consent form, GDPR notice, survey form, debriefing page
+* Set up postgreSQL database for data saving
+* Test data saving

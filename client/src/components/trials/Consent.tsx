@@ -1,4 +1,4 @@
-import type { ConsentTrialConfig } from "../../../types";
+import type { ConsentTrialConfig } from "client-types";
 
 type Props = {
   config: ConsentTrialConfig;

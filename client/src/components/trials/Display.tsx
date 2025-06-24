@@ -1,4 +1,4 @@
-import type { DisplayTrialConfig } from "../../../types";
+import type { DisplayTrialConfig } from "client-types";
 
 type Props = {
   config: DisplayTrialConfig;

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import type { WaitingTrialConfig } from "../../../types";
-import type { ServerEvent, GameState } from "../../../../shared/types";
+import type { WaitingTrialConfig } from "client-types";
+import type { ServerEvent, GameState } from "shared/types";
 import { useSocket } from "../../hooks/useSocket";
 
 type Props = {
