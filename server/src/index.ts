@@ -9,11 +9,15 @@ import {
 import { applyClientEvent } from "./game/engine";
 import { findUnoccupiedPosition } from "./game/map";
 import { createInitialGameState } from "./game/state";
-
+import { Trial } from "./game/trial";
 
 const wss = new WebSocketServer({ port: 8080 });
-let players: Record<string, ConnectedPlayer> = {};
+
+// Manage active players, games, and trials
+let players: Record<string, ConnectedPlayer> = {}; 
 let gameState: GameState = createInitialGameState();
+const activeTrials: Record<string, Trial> = {};
+
 
 wss.on("connection", (socket) => {
   const id = uuidv4();
@@ -44,17 +48,56 @@ wss.on("connection", (socket) => {
 
   socket.on("message", (data) => {
     const message: ClientEvent = JSON.parse(data.toString());
-    gameState = applyClientEvent(gameState, id, message);
-    broadcastState();
+
+    switch (message.type) {
+      case "TRIAL_READY":
+        if (message.trialId && message.duration) {
+          onTrialReadyMessage(id, message.trialId, message.duration);
+        } else {
+          console.error(`Invalid TRIAL_READY message from player ${id}:`, message);
+        }
+        return;
+      case "MOVE":
+        if (message.direction) {
+          gameState = applyClientEvent(gameState, id, message);
+          broadcastState();
+        } else {
+          console.error(`Invalid MOVE message from player ${id}:`, message);
+        }
+      }
   });
 
   socket.on("close", () => {
     console.log(`Player ${id} disconnected.`);
     delete players[id];
     delete gameState.players[id];
+
+    // Update all active trials about disconnect
+    for (const trial of Object.values(activeTrials)) {
+      trial.playerDisconnected(id);
+    }
+
     broadcastState();
   });
 });
+
+function onTrialReadyMessage(playerId: string, trialId: string, duration: number) {
+  if (!activeTrials[trialId]) {
+    activeTrials[trialId] = new Trial(
+      trialId,
+      duration,
+      players,
+      (endedTrialId) => {
+        // Cleanup when trial ends
+        delete activeTrials[endedTrialId];
+        console.log(`Trial ${endedTrialId} cleaned up.`);
+      }
+    );
+  }
+
+  activeTrials[trialId].playerReady(playerId, duration);
+}
+
 
 function broadcastState() {
   const message: ServerEvent = {

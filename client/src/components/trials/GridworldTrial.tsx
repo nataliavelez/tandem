@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
-import { GameBoard } from "../ui/GameBoard";
+import { useEffect, useState, useRef } from "react";
+import { GameBoard } from "../ui/GameBoard/GameBoard";
 import type { ClientEvent, ServerEvent, GameState } from "shared/types";
 import type { GridworldTrialConfig } from "client-types";
+import { useSocket } from "../../hooks/useSocket";
 
 type Props = {
   config: GridworldTrialConfig;
@@ -9,50 +10,78 @@ type Props = {
 };
 
 export function GridworldTrial({ config, onNext }: Props) {
+  // Set up game state and socket connection
+  const { socket, playerId } = useSocket();
   const [state, setState] = useState<GameState | null>(null);
-  const socketRef = useRef<WebSocket | null>(null);
-  const localPlayerId = useRef<string | null>(null);
 
+  // Set up timer state
+  const [timeLeft, setTimeLeft] = useState<number | null>(null);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Send TRIAL_READY when socket is available
   useEffect(() => {
-    if (socketRef.current) return;
+    if (!socket) return;
 
-    const socket = new WebSocket("ws://localhost:8080");
-    socketRef.current = socket;
-
-    socket.onopen = () => {
-      console.log("Connected to server (Gridworld)");
+    const message = {
+      type: "TRIAL_READY",
+      trialId: `gridworld-trial-${config.round}`,
+      duration: config.duration,
     };
 
-    socket.onmessage = (event) => {
+    socket.send(JSON.stringify(message));
+  }, [socket, config.round, config.duration]);
+
+  // Handle incoming server messages
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleMessage = (event: MessageEvent) => {
       const message: ServerEvent = JSON.parse(event.data);
+
+      if (message.type === "TRIAL_START") {
+        const { startTimestamp, duration } = message;
+        const expectedEnd = startTimestamp + duration;
+
+        const updateTime = () => {
+          const now = Date.now();
+          const remaining = Math.max(0, expectedEnd - now);
+          setTimeLeft(Math.ceil(remaining / 1000));
+        };
+
+        // Run immediately and then every second
+        updateTime();
+        timerRef.current = setInterval(updateTime, 1000);
+      }
 
       if (message.type === "STATE_UPDATE") {
         setState(message.state);
       }
 
-      if (message.type === "ASSIGN_ID") {
-        localPlayerId.current = message.id;
-        console.log(`Assigned player ID: ${message.id}`);
+      if (message.type === "TRIAL_END") {
+        console.log("Trial ended!");
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+        }
+        onNext();
       }
     };
 
-    socket.onclose = () => {
-      console.log("Disconnected from server (Gridworld)");
-    };
-
+    socket.addEventListener("message", handleMessage);
     return () => {
-      if (socketRef.current && socketRef.current.readyState === 1) {
-        socketRef.current.close();
-        socketRef.current = null;
+      socket.removeEventListener("message", handleMessage);
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
       }
     };
-  }, []);
+  }, [socket, onNext]);
 
-  // Handle arrow keys for movement
+  // Handle arrow key input for movement
   useEffect(() => {
     const move = (direction: "up" | "down" | "left" | "right") => {
       const message: ClientEvent = { type: "MOVE", direction };
-      socketRef.current?.send(JSON.stringify(message));
+      socket?.send(JSON.stringify(message));
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -78,25 +107,42 @@ export function GridworldTrial({ config, onNext }: Props) {
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [socket]);
 
   return (
     <div style={{ padding: 20 }}>
       <h2>Gridworld (Round {config.round})</h2>
 
-      <div style={{ 
-        padding: "20px", 
-        border: "2px dashed #ccc", 
-        borderRadius: "8px", 
-        backgroundColor: "#f9f9f9",
-        textAlign: "center" as const
-      }}>
-        <p><strong>Use arrow keys to move your character:</strong></p>
+      {timeLeft !== null && (
+        <div
+          style={{
+            fontSize: "1.5rem",
+            margin: "16px 0",
+            color: timeLeft <= 5 ? "red" : "#333",
+            fontWeight: "bold",
+          }}
+        >
+          Time remaining: {timeLeft}s
+        </div>
+      )}
+
+      <div
+        style={{
+          padding: "20px",
+          border: "2px dashed #ccc",
+          borderRadius: "8px",
+          backgroundColor: "#f9f9f9",
+          textAlign: "center" as const,
+        }}
+      >
+        <p>
+          <strong>Use arrow keys to move your character:</strong>
+        </p>
         <p>↑ ↓ ← → (Arrow Keys)</p>
       </div>
 
-      {state && localPlayerId.current && (
-        <GameBoard state={state} localPlayerId={localPlayerId.current} />
+      {state && playerId && (
+        <GameBoard state={state} localPlayerId={playerId} />
       )}
     </div>
   );

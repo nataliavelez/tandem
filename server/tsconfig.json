@@ -11,7 +11,8 @@
     "skipLibCheck": true,
     "baseUrl": ".",                            // Enables absolute paths
     "paths": {
-      "@shared/*": ["shared/*"]             // Map shared imports
+      "shared/*": ["../shared/*"],            // Shared code from the shared directory
+      "server-types": ["./types"]             
     }
   },
   "include": ["src"],
