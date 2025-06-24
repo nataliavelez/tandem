@@ -17,6 +17,13 @@ const expTimeline : TrialTimeline = [
         maxParticipants: 2 // wait for 2 participants
     },
     {
+        id: "gridworld-1",
+        type: "gridworld",
+        round: 1,
+        condition: "default",
+        duration: 10000
+    },
+    {
         "id": "post-test",
         "type": "survey"
     }

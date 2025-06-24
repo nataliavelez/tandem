@@ -49,6 +49,8 @@ export interface WaitingTrialConfig extends BaseTrialConfig {
 
 export interface ChatTrialConfig extends BaseTrialConfig {
     type: "chat";
+    roomId: string;
+    duration: number;
 }
 
 // Specialized config for an interactive grid trial
@@ -57,6 +59,7 @@ export interface GridworldTrialConfig extends BaseTrialConfig {
   round: number; // round number for this trial
   condition: string;
   duration: number; // max time in ms for this round
+  roomId: string | undefined; // room ID for multiplayer trials
 }
 
 // Post-test survey
