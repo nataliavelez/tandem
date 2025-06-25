@@ -173,6 +173,11 @@ function onTrialReadyMessage(
   trialId: string,
   duration: number
 ) {
+  if (Object.keys(roomPlayers).length < MIN_ROOM_SIZE) {
+    console.warn(`Room ${roomId} not full yet; ignoring premature TRIAL_READY from ${playerId}`);
+    return;
+  }
+
   if (!activeTrials[trialId]) {
     activeTrials[trialId] = new Trial(
       trialId,
