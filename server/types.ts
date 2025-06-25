@@ -10,6 +10,7 @@ export type ConnectedPlayer = {
 
 export interface Room {
   id: string;
+  isOpen: boolean;
   players: Record<string, ConnectedPlayer>;
   gameState: GameState;
   trialTimers: Map<string, NodeJS.Timeout>;

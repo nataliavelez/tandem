@@ -3,8 +3,8 @@ import { RoomContext } from "./roomContext";
 
 import type { ReactNode } from "react";
 
-export const RoomProvider = ({ children }: { children: ReactNode }) => {
-  const [roomId, setRoomId] = useState("default");
+export const RoomProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const [roomId, setRoomId] = useState<string | null>(null);
 
   return (
     <RoomContext.Provider value={{ roomId, setRoomId }}>

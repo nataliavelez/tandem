@@ -14,59 +14,62 @@ export function WaitingRoom({ config, onReady }: Props) {
   const { roomId, setRoomId } = useRoom();
   const [state, setState] = useState<GameState | null>(null);
 
+  // Send JOIN_LOBBY once when socket is ready
   useEffect(() => {
-    if (!socket || socket.readyState !== WebSocket.OPEN || !playerId) {
-      // Wait until socket is open and playerId is set
-      return;
-    }
+    if (!socket || socket.readyState !== WebSocket.OPEN || !playerId) return;
 
-    // Send JOIN_ROOM message once on mount (or when socket/playerId change)
-    socket.send(
-      JSON.stringify({
-        type: "JOIN_ROOM",
-        roomId: roomId 
-      })
-    );
+    const joinLobbyMessage = { type: "JOIN_LOBBY" };
+    socket.send(JSON.stringify(joinLobbyMessage));
+    console.log("Sent JOIN_LOBBY message:", joinLobbyMessage);
+  }, [socket, playerId]);
+
+  // Listen for server messages
+  useEffect(() => {
+    if (!socket) return;
 
     const handleMessage = (event: MessageEvent) => {
       const message: ServerEvent = JSON.parse(event.data);
       console.log("Received message:", message);
 
-      if (message.type === "STATE_UPDATE") {
-        console.log("Received state update:", message.state);
-        setState(message.state);
-
-        const playerCount = Object.keys(message.state.players).length;
-        console.log("Current players:", playerCount);
-
-        if (playerCount >= config.maxParticipants) {
-          onReady();
-        }
+      if (message.type === "ASSIGN_ROOM") {
+        setRoomId(message.roomId);
+        console.log("Received ASSIGN_ROOM", message.roomId)
       }
+
+      if (message.type === "STATE_UPDATE") {
+      console.log("⏰ WaitingRoom got STATE_UPDATE:", message.state);
+      setState(message.state);
+
+      const playerCount = Object.keys(message.state.players).length;
+      console.log("⏰ WaitingRoom sees players:", playerCount);
+      if (playerCount >= config.maxParticipants) {
+        console.log("▶️ onReady() about to fire");
+        setTimeout(onReady, 1000);
+      }
+    }
     };
 
     socket.addEventListener("message", handleMessage);
-
     return () => {
       socket.removeEventListener("message", handleMessage);
     };
-  }, [socket, playerId, roomId, config.maxParticipants, onReady]);
-
-  useEffect(() => {
-    if (socket && playerId) {
-      // Will set dynamically later
-      const room = "default";
-      setRoomId(room);
-
-      socket.send(JSON.stringify({ type: "JOIN_ROOM", roomId: room }));
-    }
-  }, [socket, playerId, setRoomId]);
+  }, [socket, config.maxParticipants, onReady, roomId, setRoomId]);
 
   return (
     <div style={{ padding: 20 }}>
-      <h2>Waiting Room</h2>
-      <p>Waiting for {config.maxParticipants} participants to join...</p>
-      <p>Currently joined: {state ? Object.keys(state.players).length : 0}</p>
+      <h2>Lobby</h2>
+      {roomId ? (
+      <>
+        <p>
+        Waiting for {config.maxParticipants} participants to join...
+        </p>
+        <p>
+        Currently joined: {state ? Object.keys(state.players).length : 0}
+        </p>
+      </>
+      ) : (
+      <p>Waiting for room assignment...</p>
+      )}
     </div>
   );
 }

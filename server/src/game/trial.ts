@@ -12,6 +12,7 @@ export class Trial {
   timerInterval: NodeJS.Timeout | null;
   timeoutTimer: NodeJS.Timeout | null;
   onTrialEnd: (trialId: string) => void;
+  broadcastState: () => void;
 
   static READY_TIMEOUT_MS = 10_000;
 
@@ -19,7 +20,8 @@ export class Trial {
     id: string,
     durationMs: number,
     players: Record<string, ConnectedPlayer>,
-    onTrialEnd: (trialId: string) => void
+    onTrialEnd: (trialId: string) => void,
+    broadcastState: () => void
   ) {
     this.id = id;
     this.durationMs = durationMs;
@@ -30,7 +32,7 @@ export class Trial {
     this.timerInterval = null;
     this.timeoutTimer = null;
     this.onTrialEnd = onTrialEnd;
-
+    this.broadcastState = broadcastState;
     this.startReadyTimeout();
   }
 
@@ -84,15 +86,14 @@ export class Trial {
       duration: this.durationMs,
     });
 
+    this.broadcastState(); // Immediately send game state after trial starts
+
+
     this.timerInterval = setInterval(() => {
       const elapsed = Date.now() - (this.startTimestamp ?? 0);
       const timeLeft = Math.max(this.durationMs - elapsed, 0);
 
-      this.broadcastToPlayers({
-        type: "TIMER_UPDATE",
-        trialId: this.id,
-        timeLeft,
-      });
+
 
       if (timeLeft <= 0) {
         this.endTrial();

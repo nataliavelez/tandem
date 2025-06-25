@@ -6,5 +6,7 @@ export const useRoom = () => {
   if (!context) {
     throw new Error("useRoom must be used within a RoomProvider");
   }
+
+  console.log("useRoom() called, context:", context);
   return context;
 };
