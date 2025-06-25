@@ -10,11 +10,8 @@ type Props = {
 };
 
 export function GridworldTrial({ config, onNext }: Props) {
-  // Set up game state and socket connection
-  const { socket, playerId } = useSocket();
+  const { socket, playerId, addMessageListener, removeMessageListener } = useSocket();
   const [state, setState] = useState<GameState | null>(null);
-
-  // Set up timer state
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -31,13 +28,9 @@ export function GridworldTrial({ config, onNext }: Props) {
     socket.send(JSON.stringify(message));
   }, [socket, config.round, config.duration]);
 
-  // Handle incoming server messages
+  // Handle relevant server messages via socket context
   useEffect(() => {
-    if (!socket) return;
-
-    const handleMessage = (event: MessageEvent) => {
-      const message: ServerEvent = JSON.parse(event.data);
-
+    const handleMessage = (message: ServerEvent) => {
       if (message.type === "TRIAL_START") {
         const { startTimestamp, duration } = message;
         const expectedEnd = startTimestamp + duration;
@@ -48,8 +41,7 @@ export function GridworldTrial({ config, onNext }: Props) {
           setTimeLeft(Math.ceil(remaining / 1000));
         };
 
-        // Run immediately and then every second
-        updateTime();
+        updateTime(); // update immediately
         timerRef.current = setInterval(updateTime, 1000);
       }
 
@@ -58,24 +50,24 @@ export function GridworldTrial({ config, onNext }: Props) {
       }
 
       if (message.type === "TRIAL_END") {
-        console.log("Trial ended!");
         if (timerRef.current) {
           clearInterval(timerRef.current);
           timerRef.current = null;
         }
+        setTimeLeft(null);
         onNext();
       }
     };
 
-    socket.addEventListener("message", handleMessage);
+    addMessageListener(handleMessage);
     return () => {
-      socket.removeEventListener("message", handleMessage);
+      removeMessageListener(handleMessage);
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
     };
-  }, [socket, onNext]);
+  }, [addMessageListener, removeMessageListener, onNext]);
 
   // Handle arrow key input for movement
   useEffect(() => {

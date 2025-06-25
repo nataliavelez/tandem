@@ -88,66 +88,22 @@ wss.on("connection", (socket) => {
 
     switch (message.type) {
       case "JOIN_LOBBY": {
+        if (player.roomId) {
+          console.log(
+            `Player ${player.id} already assigned to room ${player.roomId}, ignoring duplicate JOIN_LOBBY`
+          );
+          break;
+        }
         const roomId = assignPlayerToRoom(player);
         const room = rooms[roomId];
         console.log(
           `Player ${player.id} joined lobby and assigned to room ${roomId}`
         );
 
-        // Notify client which room they’ve been assigned to
         socket.send(JSON.stringify({ type: "ASSIGN_ROOM", roomId }));
-
-        // Send initial state
         socket.send(
           JSON.stringify({ type: "STATE_UPDATE", state: room.gameState })
         );
-
-        broadcastState(roomId);
-        break;
-      }
-
-      case "JOIN_ROOM": {
-        const roomId = message.roomId;
-        player.roomId = roomId;
-
-        const room = getOrCreateRoom(roomId);
-        room.players[player.id] = player;
-
-        const startPos = findUnoccupiedPosition(room.gameState);
-        room.gameState.players[player.id] = {
-          id: player.id,
-          position: startPos,
-          connected: true,
-        };
-
-        console.log(`Player ${player.id} joined room ${roomId}`);
-        console.log(`Players in room ${roomId}:`, Object.keys(room.players));
-
-        // Send updated game state
-        socket.send(
-          JSON.stringify({ type: "STATE_UPDATE", state: room.gameState })
-        );
-
-        // If room is full and trial hasn't started yet, trigger it
-        const playerCount = Object.keys(room.players).length;
-        const trialId = `${roomId}-trial-1`;
-
-        if (playerCount === MAX_ROOM_SIZE && !activeTrials[trialId]) {
-          console.log(`Room ${roomId} is full. Starting trial.`);
-
-          // Start trial after a short delay to ensure all players are ready
-
-          setTimeout(() => {
-            onTrialReadyMessage(
-              roomId,
-              room.players,
-              player.id,
-              trialId,
-              TRIAL_DURATION
-            );
-          }, 50);
-        }
-
         broadcastState(roomId);
         break;
       }

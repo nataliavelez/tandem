@@ -1,75 +1,56 @@
 import { useEffect, useState } from "react";
-import type { WaitingTrialConfig } from "client-types";
-import type { ServerEvent, GameState } from "shared/types";
 import { useSocket } from "../../hooks/useSocket";
-import { useRoom } from "../../hooks/useRoom";
+import type { ServerEvent } from "shared/types";
+import type { WaitingTrialConfig } from "client-types";
 
 type Props = {
   config: WaitingTrialConfig;
-  onReady: () => void;
+  onRoomAssigned: (roomId: string) => void;
 };
 
-export function WaitingRoom({ config, onReady }: Props) {
-  const { socket, playerId } = useSocket();
-  const { roomId, setRoomId } = useRoom();
-  const [state, setState] = useState<GameState | null>(null);
+export function WaitingRoom({ config, onRoomAssigned }: Props) {
+  const { socket, addMessageListener, removeMessageListener } = useSocket();
+  const [roomId, setRoomId] = useState<string | null>(null);
+  const [playerCount, setPlayerCount] = useState<number>(0);
 
-  // Send JOIN_LOBBY once when socket is ready
-  useEffect(() => {
-    if (!socket || socket.readyState !== WebSocket.OPEN || !playerId) return;
-
-    const joinLobbyMessage = { type: "JOIN_LOBBY" };
-    socket.send(JSON.stringify(joinLobbyMessage));
-    console.log("Sent JOIN_LOBBY message:", joinLobbyMessage);
-  }, [socket, playerId]);
-
-  // Listen for server messages
+  // Send JOIN_LOBBY when socket is ready
   useEffect(() => {
     if (!socket) return;
+    let sent = false;
+    if (!sent) {
+      socket.send(JSON.stringify({ type: "JOIN_LOBBY" }));
+      sent = true;
+    }
+  }, [socket]);
 
-    const handleMessage = (event: MessageEvent) => {
-      const message: ServerEvent = JSON.parse(event.data);
-      console.log("Received message:", message);
-
+  // Handle messages
+  useEffect(() => {
+    const handleMessage = (message: ServerEvent) => {
       if (message.type === "ASSIGN_ROOM") {
         setRoomId(message.roomId);
-        console.log("Received ASSIGN_ROOM", message.roomId)
+        onRoomAssigned(message.roomId);
       }
 
-      if (message.type === "STATE_UPDATE") {
-      console.log("⏰ WaitingRoom got STATE_UPDATE:", message.state);
-      setState(message.state);
-
-      const playerCount = Object.keys(message.state.players).length;
-      console.log("⏰ WaitingRoom sees players:", playerCount);
-      if (playerCount >= config.maxParticipants) {
-        console.log("▶️ onReady() about to fire");
-        setTimeout(onReady, 1000);
+      if (message.type === "STATE_UPDATE" && message.state?.players) {
+        const count = Object.keys(message.state.players).length;
+        setPlayerCount(count);
       }
-    }
     };
 
-    socket.addEventListener("message", handleMessage);
+    addMessageListener(handleMessage);
     return () => {
-      socket.removeEventListener("message", handleMessage);
+      removeMessageListener(handleMessage);
     };
-  }, [socket, config.maxParticipants, onReady, roomId, setRoomId]);
+  }, [addMessageListener, removeMessageListener, onRoomAssigned]);
 
   return (
-    <div style={{ padding: 20 }}>
+    <div style={{ padding: "2rem" }}>
       <h2>Lobby</h2>
-      {roomId ? (
-      <>
-        <p>
-        Waiting for {config.maxParticipants} participants to join...
-        </p>
-        <p>
-        Currently joined: {state ? Object.keys(state.players).length : 0}
-        </p>
-      </>
-      ) : (
-      <p>Waiting for room assignment...</p>
-      )}
+      <p>Waiting for {config.maxParticipants} participants to join...</p>
+      <p>
+        <strong>Currently joined:</strong> {playerCount}
+        {roomId ? ` (room ${roomId})` : " (room not assigned yet)"}
+      </p>
     </div>
   );
 }

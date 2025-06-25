@@ -88,7 +88,6 @@ export class Trial {
 
     this.broadcastState(); // Immediately send game state after trial starts
 
-
     this.timerInterval = setInterval(() => {
       const elapsed = Date.now() - (this.startTimestamp ?? 0);
       const timeLeft = Math.max(this.durationMs - elapsed, 0);

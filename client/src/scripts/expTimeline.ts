@@ -14,7 +14,7 @@ const expTimeline : TrialTimeline = [
     {
         id: "waiting-room",
         type: "waiting-room",
-        maxParticipants: 2 // wait for 2 participants
+        maxParticipants: 2
     },
     {
         id: "gridworld-1",

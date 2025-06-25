@@ -24,7 +24,7 @@ export function TrialEngine({ timeline }: Props) {
   switch (currentTrial.type) {
     case "waiting-room":
       return (
-        <WaitingRoom config={currentTrial} onReady={advance} />
+        <WaitingRoom config={currentTrial} onRoomAssigned={advance} />
       );
 
     case "consent":
