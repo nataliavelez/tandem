@@ -52,11 +52,16 @@ useEffect(() => {
   return (
     <div style={{ padding: "2rem" }}>
       <h2>Lobby</h2>
-      <p>Waiting for {config.maxParticipants} participants to join...</p>
-      <p>
-        <strong>Currently joined:</strong> {playerCount}
-        {roomId ? ` (room ${roomId})` : " (room not assigned yet)"}
-      </p>
+      {roomId ? (
+      <>
+        <p>Waiting for {config.maxParticipants} participants to join...</p>
+        <p>
+        <strong>Currently joined:</strong> {playerCount} (room {roomId})
+        </p>
+      </>
+      ) : (
+      <p>Room not assigned yet...</p>
+      )}
     </div>
   );
 }

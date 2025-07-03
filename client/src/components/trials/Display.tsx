@@ -8,13 +8,15 @@ type Props = {
 export function Display({config, onNext }: Props) {
   return (
     <div>
-        {config.text}
-        <img src={config.image} alt="Display" style={{ maxWidth: "100%" }} />
-    <button
+      <p>{config.text}</p>
+      {config.image && (
+      <img src={config.image} alt="Display" style={{ maxWidth: "100%" }} />
+      )}
+      <button
       onClick={onNext}
       disabled={!!config.continueDelay && !config._delayElapsed}>
       Continue
-    </button>
+      </button>
     </div>
   );
 }
