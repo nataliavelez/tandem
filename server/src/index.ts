@@ -9,7 +9,7 @@ import { Trial } from "./game/trial";
 
 const wss = new WebSocketServer({ port: 8080 });
 
-const MAX_ROOM_SIZE = 2;
+const MAX_ROOM_SIZE = 5;
 const MIN_ROOM_SIZE = 2; // Minimum players to start a trial
 const TRIAL_DURATION = 30_000; // in milliseconds
 
