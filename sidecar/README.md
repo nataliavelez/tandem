@@ -41,3 +41,9 @@ Uvicorn running on http://127.0.0.1:8001
 ```
 
 This means that the sidecar is now live and serving endpoints.
+
+## Testing the sidecar
+
+```
+pytest -q test_sidecar.py
+```

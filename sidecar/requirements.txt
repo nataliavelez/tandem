@@ -3,3 +3,5 @@ uvicorn[standard]==0.30.3
 numpy<2.0
 jax==0.4.26
 jaxlib==0.4.26
+pytest
+requests
