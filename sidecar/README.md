@@ -1,6 +1,6 @@
 This sidecar wraps JaxMARL’s MPE environments (starting with simple_spread) and exposes them to Tandem via FastAPI.
 
-* Installation
+## Installation
 
 1. Create and activate a Python environment
 
@@ -26,7 +26,7 @@ cd jaxmarl
 pip install -e .
 ```
 
-* Running the sidecar
+## Running the sidecar
 
 From inside the sidecar/ directory:
 
