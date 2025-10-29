@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import type { ClientEvent, ServerEvent, PublicState, TrialSpec, AgentID } from "shared/types";
+import type { ClientEvent, ServerEvent, PublicState, TrialSpec } from "shared/types";
 import { useSocket } from "../../hooks/useSocket";
 import { ActionLoop } from "../engine/ActionLoop";
 
 type Props = {
   round: number;
   durationMs: number;
-  assignedAgentId: AgentID;
   onNext: () => void;
 };
 
@@ -98,7 +97,7 @@ function MpeCanvas({
   );
 }
 
-export function MpeTrial({ round, durationMs, assignedAgentId, onNext }: Props) {
+export function MpeTrial({ round, durationMs, onNext }: Props) {
   const { socket, addMessageListener, removeMessageListener, agentId, trialSpec } = useSocket();
 
   const [state, setState] = useState<PublicState | null>(null);
@@ -162,84 +161,17 @@ export function MpeTrial({ round, durationMs, assignedAgentId, onNext }: Props) 
     };
   }, [addMessageListener, removeMessageListener, onNext, durationMs]);
 
-  // Keyboard controls
-  // useEffect(() => {
-  //   if (!socket || !spec) return;
-
-  //   const labels = spec.action_space.labels ?? ["noop", "left", "right", "down", "up"];
-  //   const idx = (name: string, fallback: number) => {
-  //     const n = labels.indexOf(name);
-  //     return n >= 0 ? n : fallback;
-  //   };
-
-  //   const keyToAction: Record<string, number> = {
-  //     " ": idx("noop", 0),
-  //     "0": 0,
-  //     arrowleft: idx("left", 1),
-  //     a: idx("left", 1),
-  //     arrowright: idx("right", 2),
-  //     d: idx("right", 2),
-  //     arrowdown: idx("down", 3),
-  //     s: idx("down", 3),
-  //     arrowup: idx("up", 4),
-  //     w: idx("up", 4),
-  //   };
-
-  //   const send = (action: number) => {
-  //     const msg: ClientEvent = {
-  //       type: "PLAYER_ACTION",
-  //       agentId: assignedAgentId,
-  //       action,
-  //     };
-  //     socket.send(JSON.stringify(msg));
-  //   };
-
-  //   const held = new Set<string>();
-
-  //   const onDown = (e: KeyboardEvent) => {
-  //     if ((e.target as HTMLElement)?.closest("input, textarea, [contenteditable]")) return;
-  //     const k = e.key.toLowerCase();
-  //     const a = keyToAction[k];
-  //     if (a !== undefined) {
-  //       e.preventDefault();
-  //       held.add(k);
-  //       send(a);
-  //     }
-  //   };
-  //   const onUp = (e: KeyboardEvent) => {
-  //     const k = e.key.toLowerCase();
-  //     if (held.has(k)) {
-  //       held.delete(k);
-  //       if (held.size === 0) send(0);
-  //       else {
-  //         const arr = Array.from(held);
-  //         const last = arr.slice(-1)[0]!;
-  //         const a = keyToAction[last];
-  //         if (a !== undefined) send(a);
-  //       }
-  //     }
-  //   };
-  //   const onBlur = () => send(0);
-
-  //   window.addEventListener("keydown", onDown);
-  //   window.addEventListener("keyup", onUp);
-  //   window.addEventListener("blur", onBlur);
-  //   return () => {
-  //     window.removeEventListener("keydown", onDown);
-  //     window.removeEventListener("keyup", onUp);
-  //     window.removeEventListener("blur", onBlur);
-  //   };
-  // }, [socket, spec, assignedAgentId]);
-  console.log("socket", !!socket, "assignedAgentId", assignedAgentId, "spec", spec);
+  console.log("socket", !!socket, "assignedAgentId", agentId, "spec", spec);
+  
   return (
     <div style={{ padding: 20, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif" }}>
       <h2 style={{ marginBottom: 8 }}>MPE — simple_spread (Round {round})</h2>
 
-      {socket && assignedAgentId && spec && <div style={{color:"#6b7280"}}>ActionLoop ON</div>} 
-      {socket && assignedAgentId && spec && (
+      {socket && agentId && spec && <div style={{color:"#6b7280"}}>ActionLoop ON</div>} 
+      {socket && agentId && spec && (
         <ActionLoop
           ws={socket}
-          agentId={assignedAgentId}
+          agentId={agentId}
           actionSpace={spec.action_space}
           tickMs={100}       
         />

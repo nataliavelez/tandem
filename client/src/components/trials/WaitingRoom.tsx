@@ -64,7 +64,7 @@ export function WaitingRoom({ config, onRoomAssigned }: Props) {
     addMessageListener(handleMessage);
 
     if (!sentJoinRef.current) {
-      if (socket.readyState === WebSocket.OPEN) {
+      if (!sentJoinRef.current && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ type: "JOIN_LOBBY" }));
         sentJoinRef.current = true;
       } else {

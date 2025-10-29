@@ -45,8 +45,13 @@ export function TrialEngine({ timeline }: Props) {
         const tickMs = currentTrial.tickMs ?? 100;
         const horizon = currentTrial.horizon ?? 3000;
         const durationMs = horizon * tickMs;
-        const agentId: AgentID = assignedAgentId ?? ("agent_0" as AgentID);
-        return <MpeTrial round={round} durationMs={durationMs} assignedAgentId={agentId} onNext={advance} />;
+        return (
+          <MpeTrial
+            round={round}
+            durationMs={durationMs}
+            onNext={advance}
+          />
+        );
       }
 
     // case "post-test":

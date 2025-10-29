@@ -24,14 +24,6 @@ function send(ws: WebSocket, msg: ServerEvent) {
   ws.send(JSON.stringify(msg));
 }
 
-function assignAgent(existing: Set<AgentID>, maxAgents = REQUIRED_PLAYERS): AgentID | null {
-  for (let i = 0; i < maxAgents; i++) {
-    const id = `agent_${i}` as AgentID;
-    if (!existing.has(id)) return id;
-  }
-  return null; 
-}
-
 async function ensureRoom(): Promise<MpeRoom> {
   if (!room) {
     room = new MpeRoom(ROOM_ID);
