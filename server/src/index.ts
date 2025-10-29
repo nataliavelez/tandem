@@ -58,14 +58,21 @@ wss.on("connection", async (ws) => {
       if (msg.type === "JOIN_LOBBY" || msg.type === "JOIN_ROOM") {
         const r = await ensureRoom();
 
-        const taken = new Set<AgentID>(
-          [...r.clients.values()].map((c) => c.agentId).filter(Boolean) as AgentID[],
+        const max = REQUIRED_PLAYERS;
+        const used = new Set<AgentID>(
+          [...r.clients.values()].map(c => c.agentId).filter(Boolean) as AgentID[]
         );
 
-        const myAgent = assignAgent(taken);
-        r.addClient(playerId, (m) => send(ws, m), myAgent);
-        clients.set(playerId, { ws, agentId: myAgent });
+        let myAgent: AgentID | null = null;
+        for (let i = 0; i < max; i++) {
+          const id = `agent_${i}` as AgentID;
+          if (!used.has(id)) { myAgent = id; break; }
+        }
 
+        // Register immediately 
+        r.addClient(playerId, (m) => send(ws, m), myAgent);
+
+        clients.set(playerId, { ws, agentId: myAgent });
         send(ws, { type: "ASSIGN_ROOM", roomId: ROOM_ID });
         send(ws, { type: "ASSIGN_AGENT", agentId: myAgent });
 

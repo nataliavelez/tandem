@@ -29,7 +29,12 @@ export function useActionBinding(actionSpace: ActionSpace) {
     const up = (e: KeyboardEvent) => {
       const k = e.key.toLowerCase();
       held.current.delete(k);
-      setCurrent(held.current.size ? (keymap.current[[...held.current].at(-1)!] ?? noop) : noop);
+      setCurrent(
+        held.current.size
+          ? (keymap.current[[...held.current][held.current.size - 1]] ?? noop)
+          : noop
+      );
+      // setCurrent(held.current.size ? (keymap.current[[...held.current].at(-1)!] ?? noop) : noop);
     };
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
