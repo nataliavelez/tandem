@@ -1,5 +1,11 @@
+{/*
+MPE visualizations.
+
+Created by: Elizabeth Mieczkowski, Updated: 10/2025
+*/}
+
 import { useEffect, useRef } from "react";
-import type { PublicState } from "shared/types"; // prefer the alias over long relative paths
+import type { PublicState } from "shared/types"; 
 
 type Props = {
   state: PublicState | null;
@@ -24,7 +30,7 @@ export function MpeCanvas({ state, width = 600, height = 600 }: Props) {
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // scale once per resize
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); 
   }, [width, height]);
 
   useEffect(() => {

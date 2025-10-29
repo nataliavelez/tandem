@@ -1,3 +1,21 @@
+{/*
+The game screen for an MPE round (to render canvas, timer, and actions).
+
+Inputs (props): { round: number; durationMs: number; onNext: () => void }
+Reads from context: socket, agentId, trialSpec
+
+Outputs:
+- Sends TRIAL_READY when mounted for this round
+- Subscribes to server events
+- TRIAL_START: seeds spec, starts countdown timer
+- STATE_UPDATE: updates state (drawn by canvas)
+- TRIAL_END: clears timer, calls onNext()
+- Renders <ActionLoop> once socket && agentId && spec are ready
+- Draws current env state via MpeCanvas
+
+Created by: Elizabeth Mieczkowski, Updated: 10/2025
+*/}
+
 import { useEffect, useRef, useState } from "react";
 import type { ClientEvent, ServerEvent, PublicState, TrialSpec } from "shared/types";
 import { useSocket } from "../../hooks/useSocket";
@@ -27,14 +45,11 @@ function MpeCanvas({
     const ctx = ref.current?.getContext("2d");
     if (!ctx) return;
 
-    // clear bg
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, width, height);
 
-    // guard: only draw when the sim is running
     if (!state || state.phase !== "running") {
-      // draw border so users see the canvas is alive
       ctx.globalAlpha = 1;
       ctx.strokeStyle = "#e5e7eb";
       ctx.lineWidth = 1;

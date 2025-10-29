@@ -1,4 +1,22 @@
-// server/index.ts
+{/*
+WebSocket orchestrator for join/assign/ready/actions. Bridges room & sockets.
+
+Outputs:
+- On connection: generate playerId, send ASSIGN_ID
+- On JOIN_LOBBY/JOIN_ROOM:
+   A. Ensure single MpeRoom (TODO: CHANGE TO MULTI-ROOM)
+   B. Compute free agent slot (0..N-1)
+   C. Register immediately to reserve slot (avoid overlapping agent IDs)
+   D. Send ASSIGN_ROOM, ASSIGN_AGENT
+   E. Start when ready
+  
+TRIAL_READY: when enough players, start trial in room
+PLAYER_ACTION: call room.receiveAction
+CLOSE: remove from room
+
+Edited by: Elizabeth Mieczkowski, Updated: 10/2025
+*/}
+
 import { WebSocketServer, WebSocket } from "ws";
 import type {
   ClientEvent,

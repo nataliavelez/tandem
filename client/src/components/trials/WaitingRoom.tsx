@@ -1,19 +1,24 @@
+{/*
+Lobby screen so players can join lobby, wait for room to fill, and start game.
+
+Inputs (props): { config: { maxParticipants?: number }, onRoomAssigned(roomId) }
+
+Outputs:
+- On socket open, sends JOIN_LOBBY
+- Listens for: ASSIGN_ROOM, STATE_UPDATE with phase: "lobby"
+
+Created by: Elizabeth Mieczkowski, Updated: 10/2025
+*/}
+
 import { useEffect, useRef, useState } from "react";
 import { useSocket } from "../../hooks/useSocket";
-import type { ServerEvent, PublicState } from "shared/types";
+import type { ServerEvent } from "shared/types";
 import type { WaitingTrialConfig } from "client-types";
 
 type Props = {
   config: WaitingTrialConfig;
   onRoomAssigned: (roomId: string) => void;
 };
-
-function isStateUpdate(msg: ServerEvent): msg is Extract<ServerEvent, { type: "STATE_UPDATE"; state: PublicState }> {
-  return msg.type === "STATE_UPDATE";
-}
-function isLobbyState(state: PublicState): state is Extract<PublicState, { phase: "lobby" }> {
-  return state.phase === "lobby";
-}
 
 export function WaitingRoom({ config, onRoomAssigned }: Props) {
   const { socket, addMessageListener, removeMessageListener } = useSocket();
@@ -41,16 +46,16 @@ export function WaitingRoom({ config, onRoomAssigned }: Props) {
         const count = s.playerCount ?? Object.keys(s.players ?? {}).length;
         setPlayerCount(count);
 
-        // ✅ auto-signal readiness ONCE when lobby is full
+        // auto-signal readiness once when lobby is full
         const needed = config.maxParticipants ?? count;
         if (s.roomId && count >= needed && !sentReadyRef.current) {
-          socket.send(JSON.stringify({ type: "TRIAL_READY" })); // fields unused by server
+          socket.send(JSON.stringify({ type: "TRIAL_READY" })); 
           sentReadyRef.current = true;
         }
         return;
       }
 
-      // ✅ advance ONLY when trial actually starts
+      // advance ONLY when trial actually starts
       if (message.type === "TRIAL_START") {
         if (!advancedRef.current) {
           advancedRef.current = true;

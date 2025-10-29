@@ -1,3 +1,9 @@
+{/*
+Main component that runs the trial engine, rendering different trial types.
+
+Edited by: Elizabeth Mieczkowski, Updated: 10/2025
+*/}
+
 import { useState } from "react";
 import type { TrialTimeline, TrialConfig } from "client-types";
 import { ConsentForm } from "../trials/Consent";

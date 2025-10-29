@@ -1,4 +1,6 @@
-// server/src/game/room.ts
+{/*
+Edited by: Elizabeth Mieczkowski, Updated: 10/2025
+*/}
 import { v4 as uuidv4 } from "uuid";
 import type { ConnectedPlayer } from "../../server-types";
 import type { PublicState, ServerEvent, LobbyState } from "../../../shared/types";
@@ -15,7 +17,7 @@ export class GameRoom {
 
   constructor(id?: string) {
     this.id = id ?? `room-${uuidv4().slice(0, 6)}`;
-    this.gameState.roomId = this.id; // if your internal state tracks this
+    this.gameState.roomId = this.id; 
   }
 
   addPlayer(player: ConnectedPlayer) {
@@ -46,7 +48,7 @@ export class GameRoom {
       roomId: this.id,
       players,
       playerCount: Object.keys(players).length,
-      // maxParticipants: this.maxParticipants, // optional
+      // maxParticipants: this.maxParticipants, 
     };
   }
 

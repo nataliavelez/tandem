@@ -1,5 +1,5 @@
 import { ServerEvent } from "shared/types";
-import { ConnectedPlayer } from "server-types";
+import { ConnectedPlayer } from "../../server-types";
 type TrialState = "WaitingForReady" | "Running" | "Finished";
 
 export class Trial {

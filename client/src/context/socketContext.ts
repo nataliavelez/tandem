@@ -1,3 +1,9 @@
+{/*
+Type + context for app-wide socket state.
+
+Edited by: Elizabeth Mieczkowski, Updated: 10/2025
+*/}
+
 import { createContext } from "react";
 import type { ServerEvent, TrialSpec, AgentID } from "shared/types";
 

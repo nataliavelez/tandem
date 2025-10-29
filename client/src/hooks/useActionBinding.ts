@@ -1,3 +1,9 @@
+{/*
+Turn keyboard state into a discrete action index each time it changes.
+
+Created by: Elizabeth Mieczkowski, Updated: 10/2025
+*/}
+
 import { useEffect, useRef, useState } from "react";
 import type { ActionSpace } from "../../../shared/types";
 

@@ -1,4 +1,8 @@
-// server/src/rooms/mpeRoom.ts
+{/*
+MPE game lifecycle and sidecar interaction.
+
+Created by: Elizabeth Mieczkowski, Updated: 10/2025
+*/}
 import { envCreate, envSpec, envReset, envStep } from "./sidecarClient";
 import type {
   PublicState,
@@ -17,24 +21,16 @@ export class MpeRoom {
   envId!: string;
   spec!: TrialSpec;
 
-  // clientId -> { send, agentId }
   clients = new Map<PlayerID, { send: (msg: ServerEvent) => void; agentId: AgentID | null }>();
-
-  // latest per-agent action
   lastActions = new Map<AgentID, number>();
-
-  // loop control
   private interval: NodeJS.Timeout | null = null;
   public running = false;
-
-  // configuration for next trial
   private planned = { seed: 123, num_agents: 3, num_landmarks: 3, horizon: 3000 };
 
   constructor(id: string) {
     this.id = id;
   }
 
-  /** Register a socket bridge; does NOT start a trial. */
   addClient(clientId: PlayerID, send: (msg: ServerEvent) => void, agentId: AgentID | null) {
     this.clients.set(clientId, { send, agentId });
     this.broadcastLobbyState(); // reflect roster change
@@ -65,8 +61,6 @@ export class MpeRoom {
     this.envId = create.env_id;
     this.spec = await envSpec(this.envId);
     await envReset(this.envId);
-
-    // let the lobby know specs if you want (optional):
     this.broadcastLobbyState();
   }
 

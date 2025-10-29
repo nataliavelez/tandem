@@ -1,3 +1,10 @@
+{/*
+Reads the current keyboard action (useActionBinding) and sends it to the 
+server at a fixed interval (every tick).
+
+Created by: Elizabeth Mieczkowski, Updated: 10/2025
+*/}
+
 import { useEffect, useRef } from "react";
 import type { AgentID, ActionSpace } from "shared/types";
 import { useActionBinding } from "../../hooks/useActionBinding";
@@ -6,11 +13,10 @@ export function ActionLoop({
   ws, agentId, actionSpace, tickMs = 100,
 }: { ws: WebSocket; agentId: AgentID; actionSpace: ActionSpace; tickMs?: number }) {
 
-  const rawAction = useActionBinding(actionSpace);            // returns number based on keys
+  const rawAction = useActionBinding(actionSpace);      
   const latestActionRef = useRef(0);
   const n = actionSpace.n;
 
-  // clamp + store latest without restarting the interval
   latestActionRef.current = rawAction >= 0 && rawAction < n ? rawAction : 0;
 
   useEffect(() => {
@@ -23,7 +29,6 @@ export function ActionLoop({
       if (ws.readyState === WebSocket.OPEN) {
         const action = latestActionRef.current;
         ws.send(JSON.stringify({ type: "PLAYER_ACTION", agentId, action }));
-        // optional: console.log("[CLIENT] tick send", { agentId, action });
       }
 
       timer = window.setTimeout(tick, tickMs);
