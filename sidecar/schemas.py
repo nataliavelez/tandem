@@ -15,7 +15,7 @@ class CreateReq(BaseModel):
     num_landmarks: int = 3
     local_ratio: float = 0.5
     action_type: Literal["DISCRETE_ACT"] = "DISCRETE_ACT"
-    episode_horizon: int = 300
+    episode_horizon: int = 3000
 
 class IdReq(BaseModel):
     env_id: str

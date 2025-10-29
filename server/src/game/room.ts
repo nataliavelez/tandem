@@ -1,31 +1,34 @@
 // server/src/game/room.ts
 import { v4 as uuidv4 } from "uuid";
-import type { ConnectedPlayer } from "server-types";
-import type { GameState, ServerEvent } from "../../../shared/types";
+import type { ConnectedPlayer } from "../../server-types";
+import type { PublicState, ServerEvent, LobbyState } from "../../../shared/types";
 import { createInitialGameState } from "./state";
 import { findUnoccupiedPosition } from "./map";
 
 export class GameRoom {
   public readonly id: string;
   public players: Record<string, ConnectedPlayer> = {};
-  public gameState: GameState;
+  public gameState = createInitialGameState();
   public isOpen = true;
+
+  private tick = 0; 
 
   constructor(id?: string) {
     this.id = id ?? `room-${uuidv4().slice(0, 6)}`;
-    this.gameState = createInitialGameState();
-    this.gameState.roomId = this.id;
+    this.gameState.roomId = this.id; // if your internal state tracks this
   }
 
   addPlayer(player: ConnectedPlayer) {
     this.players[player.id] = player;
-    // initialize in gameState
+  
     const startPos = findUnoccupiedPosition(this.gameState);
     this.gameState.players[player.id] = {
       id: player.id,
       position: startPos,
       connected: true,
     };
+  
+    player.socket.send(JSON.stringify({ type: "ASSIGN_ROOM", roomId: this.id }));
   }
 
   removePlayer(playerId: string) {
@@ -33,12 +36,30 @@ export class GameRoom {
     delete this.gameState.players[playerId];
   }
 
-  broadcastState() {
-    const msg: ServerEvent = { type: "STATE_UPDATE", state: this.gameState };
-    const json = JSON.stringify(msg);
+  private buildLobbyState(): LobbyState {
+    const players: LobbyState["players"] = {};
     for (const p of Object.values(this.players)) {
-      p.socket.send(json);
+      players[p.id] = { id: p.id, name: p.name };
     }
+    return {
+      phase: "lobby",
+      roomId: this.id,
+      players,
+      playerCount: Object.keys(players).length,
+      // maxParticipants: this.maxParticipants, // optional
+    };
+  }
+
+  broadcastState() {
+    const state: PublicState = this.buildLobbyState(); 
+    const msg: ServerEvent = {
+      type: "STATE_UPDATE",
+      state,
+      tick: this.tick++,
+      serverTime: Date.now(),
+    };
+    const json = JSON.stringify(msg);
+    for (const p of Object.values(this.players)) p.socket.send(json);
   }
 
   assignAndBroadcast(player: ConnectedPlayer) {

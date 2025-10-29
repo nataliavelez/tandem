@@ -5,3 +5,6 @@ client/node_modules
 server/node_modules
 .DS_Store
 /jaxmarl/
+__pycache__/
+*.py[cod]
+*$py.class

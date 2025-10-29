@@ -1,28 +1,41 @@
-import type { GameState } from "shared/types";
+import type { PublicState, AgentID } from "shared/types";
 import "./GameBoard.css";
 
 type Props = {
-  state: GameState;
-  localPlayerId: string;
+  state: PublicState;          
+  localAgentId: AgentID;       
 };
 
 const GRID_SIZE = 10;
 
-export function GameBoard({ state, localPlayerId }: Props) {
+export function GameBoard({ state, localAgentId }: Props) {
+  if (state.phase !== "running") {
+    return <div className="board board--inactive">Waiting for game to start…</div>;
+  }
+
+  const occ = new Map<string, AgentID>();
+  for (const [agentId, ag] of Object.entries(state.agents)) {
+    const [px, py] = ag.pos; 
+    const x = Math.round(px);
+    const y = Math.round(py);
+    if (x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE) {
+      occ.set(`${x}-${y}`, agentId as AgentID);
+    }
+  }
+
   const grid = Array.from({ length: GRID_SIZE }, (_, y) =>
     Array.from({ length: GRID_SIZE }, (_, x) => {
-      const occupyingPlayer = Object.values(state.players).find(
-        (p) => p.position.x === x && p.position.y === y
-      );
-
-      const isLocal = occupyingPlayer?.id === localPlayerId;
+      const key = `${x}-${y}`;
+      const occupyingAgent = occ.get(key);
+      const isLocal = occupyingAgent === localAgentId;
 
       return (
         <div
-          key={`${x}-${y}`}
-          className={`cell ${occupyingPlayer ? (isLocal ? "you" : "other") : ""}`}
+          key={key}
+          className={`cell ${occupyingAgent ? (isLocal ? "you" : "other") : ""}`}
+          title={occupyingAgent ?? undefined}
         >
-          {occupyingPlayer ? "👾" : ""}
+          {occupyingAgent ? "👾" : ""}
         </div>
       );
     })
@@ -38,3 +51,4 @@ export function GameBoard({ state, localPlayerId }: Props) {
     </div>
   );
 }
+

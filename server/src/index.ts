@@ -1,197 +1,117 @@
+// server/index.ts
 import { WebSocketServer, WebSocket } from "ws";
-import { v4 as uuidv4 } from "uuid";
-import type { ConnectedPlayer, Room } from "server-types";
-import { GameState, ClientEvent, ServerEvent } from "../../shared/types";
-import { applyClientEvent } from "./game/engine";
-import { findUnoccupiedPosition } from "./game/map";
-import { createInitialGameState } from "./game/state";
-import { Trial } from "./game/trial";
+import type {
+  ClientEvent,
+  ServerEvent,
+  AgentID,
+  RoomID,
+  PlayerID,
+} from "../../shared/types";
+import { MpeRoom } from "./game/mpeRoom";
 
-const wss = new WebSocketServer({ port: 8080 });
+const PORT = Number(process.env.PORT ?? 8080);
+const wss = new WebSocketServer({ port: PORT });
 
-const MAX_ROOM_SIZE = 2;
-const MIN_ROOM_SIZE = 2; // Minimum players to start a trial
-const TRIAL_DURATION = 30_000; // in milliseconds
+// TODO: scale to multiple rooms
+const ROOM_ID: RoomID = "room_mpe_1";
+let room: MpeRoom | null = null;
 
-const rooms: Record<string, Room> = {};
-const players: Record<string, ConnectedPlayer> = {};
-const activeTrials: Record<string, Trial> = {};
+const clients = new Map<PlayerID, { ws: WebSocket; agentId: AgentID | null }>();
+const ready = new Set<PlayerID>();
+const REQUIRED_PLAYERS = Number(process.env.REQUIRED_PLAYERS ?? 2);
 
-let openRoomId: string | null = null;
-
-function getOrCreateRoom(roomId: string): Room {
-  if (!rooms[roomId]) {
-    rooms[roomId] = {
-      id: roomId,
-      players: {},
-      isOpen: true,
-      gameState: createInitialGameState(),
-      trialTimers: new Map(),
-    };
-  }
-  return rooms[roomId];
+function send(ws: WebSocket, msg: ServerEvent) {
+  ws.send(JSON.stringify(msg));
 }
 
-function assignPlayerToRoom(player: ConnectedPlayer): string {
-  // If there's no open room or it's full, create a new one
-  if (
-    !openRoomId ||
-    Object.keys(rooms[openRoomId]?.players ?? {}).length >= MAX_ROOM_SIZE
-  ) {
-    openRoomId = `room-${uuidv4().slice(0, 6)}`;
-    getOrCreateRoom(openRoomId);
+function assignAgent(existing: Set<AgentID>, maxAgents = REQUIRED_PLAYERS): AgentID | null {
+  for (let i = 0; i < maxAgents; i++) {
+    const id = `agent_${i}` as AgentID;
+    if (!existing.has(id)) return id;
   }
-
-  const room = rooms[openRoomId];
-  player.roomId = room.id;
-  room.players[player.id] = player;
-
-  const startPos = findUnoccupiedPosition(room.gameState);
-  room.gameState.players[player.id] = {
-    id: player.id,
-    position: startPos,
-    connected: true,
-  };
-
-  console.log(`Player ${player.id} assigned to room ${room.id}`);
-  return room.id;
+  return null; 
 }
 
-function broadcastState(roomId: string) {
-  const room = rooms[roomId];
-  if (!room) return;
-
-  const json = JSON.stringify({ type: "STATE_UPDATE", state: room.gameState });
-  for (const player of Object.values(room.players)) {
-    console.log(`→ sending STATE_UPDATE to ${player.id}`);
-    player.socket.send(json);
+async function ensureRoom(): Promise<MpeRoom> {
+  if (!room) {
+    room = new MpeRoom(ROOM_ID);
+    await room.init({
+      seed: 123,
+      num_agents: REQUIRED_PLAYERS,   
+      num_landmarks: 3,
+      horizon: 3000,                  
+    });
   }
+  return room;
 }
 
-wss.on("connection", (socket) => {
-  console.log("New connection established");
+wss.on("connection", async (ws) => {
+  const playerId: PlayerID = Math.random().toString(36).slice(2);
+  send(ws, { type: "ASSIGN_ID", id: playerId });
+  clients.set(playerId, { ws, agentId: null });
 
-  const id = uuidv4();
-  const player: ConnectedPlayer = {
-    id,
-    socket,
-    lastSeen: Date.now(),
-    roomId: "",
-  };
+  ws.on("message", async (buf) => {
+    try {
+      const msg = JSON.parse(buf.toString()) as ClientEvent;
 
-  players[id] = player;
+      // Lobby / Join 
+      if (msg.type === "JOIN_LOBBY" || msg.type === "JOIN_ROOM") {
+        const r = await ensureRoom();
 
-  socket.send(JSON.stringify({ type: "ASSIGN_ID", id }));
-
-  socket.on("message", (data) => {
-    const message: ClientEvent = JSON.parse(data.toString());
-
-    switch (message.type) {
-      case "JOIN_LOBBY": {
-        if (player.roomId) {
-          console.log(
-            `Player ${player.id} already assigned to room ${player.roomId}, ignoring duplicate JOIN_LOBBY`
-          );
-          break;
-        }
-        const roomId = assignPlayerToRoom(player);
-        const room = rooms[roomId];
-        console.log(
-          `Player ${player.id} joined lobby and assigned to room ${roomId}`
+        const taken = new Set<AgentID>(
+          [...r.clients.values()].map((c) => c.agentId).filter(Boolean) as AgentID[],
         );
 
-        socket.send(JSON.stringify({ type: "ASSIGN_ROOM", roomId }));
-        socket.send(
-          JSON.stringify({ type: "STATE_UPDATE", state: room.gameState })
-        );
-        broadcastState(roomId);
-        break;
+        const myAgent = assignAgent(taken);
+        r.addClient(playerId, (m) => send(ws, m), myAgent);
+        clients.set(playerId, { ws, agentId: myAgent });
+
+        send(ws, { type: "ASSIGN_ROOM", roomId: ROOM_ID });
+        send(ws, { type: "ASSIGN_AGENT", agentId: myAgent });
+
+        return;
       }
 
-      case "TRIAL_READY": {
-        const room = rooms[player.roomId];
-        if (!room) return;
+      // Gameplay inputs 
+      if (msg.type === "PLAYER_ACTION") {
+        if (room) room.receiveAction(msg.agentId, msg.action);
+        return;
+      }
 
-        if (message.trialId && message.duration) {
-          onTrialReadyMessage(
-            room.id,
-            room.players,
-            player.id,
-            message.trialId,
-            message.duration
-          );
-        } else {
-          console.error(
-            `Invalid TRIAL_READY message from player ${player.id}:`,
-            message
-          );
+      // Screen coordination
+      if (msg.type === "TRIAL_READY") {
+        ready.add(playerId);
+
+        // Start once enough ppl are ready
+        if (room && !room.running && ready.size >= REQUIRED_PLAYERS) {
+          console.log(`[orchestrator] ${ready.size}/${REQUIRED_PLAYERS} ready → starting trial`);
+          await room.startTrial();
+          ready.clear();
         }
-        break;
+        return;
       }
 
-      case "MOVE": {
-        const room = rooms[player.roomId];
-        if (!room) return;
-
-        if (message.direction) {
-          room.gameState = applyClientEvent(room.gameState, player.id, message);
-          broadcastState(room.id);
-        } else {
-          console.error(
-            `Invalid MOVE message from player ${player.id}:`,
-            message
-          );
-        }
-        break;
-      }
-
-      default:
-        console.warn(`Unhandled message type: ${(message as any).type}`);
+    } catch (e) {
+      try {
+        send(ws, { type: "ERROR", message: `Bad message: ${String(e)}` });
+      } catch {}
     }
   });
 
-  socket.on("close", () => {
-    console.log(`Client ${player.id} disconnected`);
-    const room = rooms[player.roomId];
-    if (room) {
-      delete room.players[player.id];
-      delete room.gameState.players[player.id];
-      broadcastState(room.id);
-    }
-    delete players[player.id];
+  ws.on("close", () => {
+    room?.removeClient(playerId);
+    clients.delete(playerId);
+    ready.delete(playerId); 
   });
 
-  socket.on("error", (err) => {
-    console.error("WebSocket error:", err);
+  ws.on("error", (err) => {
+    try {
+      send(ws, { type: "ERROR", message: String(err) });
+    } catch {}
   });
 });
 
-function onTrialReadyMessage(
-  roomId: string,
-  roomPlayers: Record<string, ConnectedPlayer>,
-  playerId: string,
-  trialId: string,
-  duration: number
-) {
-  if (Object.keys(roomPlayers).length < MIN_ROOM_SIZE) {
-    console.warn(`Room ${roomId} not full yet; ignoring premature TRIAL_READY from ${playerId}`);
-    return;
-  }
+console.log(`WS orchestrator listening on ws://127.0.0.1:${PORT}`);
 
-  if (!activeTrials[trialId]) {
-    activeTrials[trialId] = new Trial(
-      trialId,
-      duration,
-      roomPlayers,
-      (endedTrialId) => {
-        delete activeTrials[endedTrialId];
-        console.log(`Trial ${endedTrialId} cleaned up.`);
-      },
-      () => broadcastState(roomId)
-    );
-  }
 
-  activeTrials[trialId].playerReady(playerId, duration);
-}
 
-console.log("WebSocket server running on ws://localhost:8080");

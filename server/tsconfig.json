@@ -15,6 +15,6 @@
       "server-types": ["./types"]             
     }
   },
-  "include": ["src"],
+  "include": ["src", "../client/src/hooks/useActionBinding.ts", "../client/src/components/engine/ActionLoop.tsx"],
   "exclude": ["node_modules", "dist"]
 }

@@ -18,7 +18,7 @@ const expTimeline : TrialTimeline = [
     },
     {
         id: "gridworld-1",
-        type: "gridworld",
+        type: "mpe",
         round: 1,
         condition: "default",
         duration: 10000
