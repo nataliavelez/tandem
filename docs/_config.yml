@@ -3,3 +3,5 @@ description: Lightweight templates for online multiplayer studies
 theme: just-the-docs
 
 url: https://nataliavelez.github.io/tandem/
+
+nav_enabled: true
