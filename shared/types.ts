@@ -55,7 +55,8 @@ export type TrialSpec = {
 
 // -------- Client -> Server --------
 export type MpeClientEvent =
-  | { type: "PLAYER_ACTION"; agentId: AgentID; action: MpeAction };
+  // agentId is ignored by the server (it uses the player's assigned seat); kept for client logging
+  | { type: "PLAYER_ACTION"; agentId?: AgentID; action: MpeAction };
 
 // Core client -> server (lobby/session control)
 export type CoreClientEvent =

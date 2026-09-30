@@ -1,0 +1,108 @@
+TANDEM UPDATES LOG
+==================
+Running log of every bug fix and feature change. Newest session at the bottom.
+Format: [type] area — what changed (why). Files touched.
+
+------------------------------------------------------------
+Session 2026-09-30 — Multiplayer backend fixes (roadmap §1)
+------------------------------------------------------------
+
+[bug] Security — A client could control ANY agent: the server trusted the agentId
+      field in PLAYER_ACTION. The server now looks up the sender's own seat and
+      ignores the client-sent agentId (field made optional in the shared type).
+      Files: server/src/index.ts, server/src/game/mpeRoom.ts, shared/types.ts
+
+[feature] Rooms — Replaced the single hardcoded global room with a RoomManager.
+      Players fill the oldest open room up to REQUIRED_PLAYERS; when it is full a
+      new room is created (room_1, room_2, ...). Once a room's first trial starts
+      it is locked, so latecomers go to a new room instead of joining mid-game.
+      Empty rooms are disposed and their sidecar env is freed. JOIN_ROOM now
+      joins a specific open room or returns an ERROR.
+      Files: server/src/game/roomManager.ts (new), server/src/index.ts
+
+[bug] Rooms — Extra players beyond capacity were added to the room with
+      agentId=null and still counted toward the lobby total. Now impossible:
+      a full room is never offered; the player goes to the next room.
+      Files: server/src/game/mpeRoom.ts, server/src/game/roomManager.ts
+
+[bug] Ready check — The ready set was global across all players, and a trial
+      started as soon as N readies arrived from anyone. Each room now owns its
+      ready set and starts only when every seat is filled and every seated
+      player is ready. A leaving player's ready is withdrawn.
+      Files: server/src/game/mpeRoom.ts, server/src/index.ts
+
+[bug] Tick loop — setInterval(async ...) could run overlapping sidecar steps
+      when a step took longer than TICK_MS, delivering states out of order. The
+      loop is now serialized (next tick scheduled only after the previous step
+      returns), keeps a fixed cadence without bursting to catch up, and logs
+      overruns. After 20 consecutive sidecar failures the trial ends with an ERROR
+      instead of erroring forever.
+      Files: server/src/game/mpeRoom.ts
+
+[bug] Disconnects — A player who disconnected while holding a key left their
+      agent executing that action for the rest of the trial (lastActions never
+      cleared). Their agent now gets noop and coasts to rest.
+      Files: server/src/game/mpeRoom.ts
+
+[bug] Disconnects — A player leaving mid-trial broadcast a phase:"lobby" state
+      to the whole room, blanking everyone's game canvas until the next tick.
+      Lobby state is no longer broadcast while a trial is running.
+      Files: server/src/game/mpeRoom.ts
+
+[bug] Multi-round — stopTrial never reset the env, so a second round started at
+      step >= horizon and ended immediately. The env is now reset after every
+      trial, and lastActions are cleared between rounds.
+      Files: server/src/game/mpeRoom.ts
+
+[bug] Episode IDs — The sidecar hardcoded "e_0001" on reset and "e_0"/"e_1" on
+      step, so episodes could not be told apart in the data. Each reset now
+      increments a per-env counter (e_0001, e_0002, ...) used by both reset and step.
+      Files: sidecar/app.py, sidecar/env_registry.py
+
+[bug] Sidecar memory leak — Envs were never deleted from ENVS. Added
+      POST /env/close; rooms call it when disposed (and if a room is disposed
+      while its env is still being created).
+      Files: sidecar/app.py, server/src/game/sidecarClient.ts, server/src/game/mpeRoom.ts
+
+[perf] Sidecar speed — reset/step were un-jitted JAX calls. Both are now
+      jax.jit-compiled per env, with actions passed as int32 so they do not
+      retrace. Envs are warmed up at creation (reset + two chained steps; the
+      2nd step triggers a recompile because step returns slightly different
+      dtypes than reset). Measured: every step 2–3 ms, including the first;
+      previously ~185 ms on step 2, causing tick overruns at each room's first trial.
+      Files: sidecar/env_registry.py, sidecar/app.py
+
+[bug] Sidecar validation — /env/step with a missing agent crashed with a
+      KeyError (500). It now returns 400 listing missing/unknown agents.
+      Files: sidecar/app.py
+
+[feature] Config — Added HORIZON (steps per trial) and SEED env vars, and
+      maxParticipants is now sent in lobby state.
+      Files: server/src/index.ts, server/src/game/mpeRoom.ts
+
+[robustness] Orchestrator — Malformed JSON and handler errors are caught and
+      logged separately; sends are skipped on closed sockets.
+      Files: server/src/index.ts
+
+[test] Sidecar — Added tests for episode-id increments, missing-agent
+      rejection and /env/close. Fixed test_invalid_action_rejected, which now
+      sends actions for all agents so it tests the range check. 7/7 pass.
+      Files: sidecar/test_sidecar.py
+
+[test] Verified with a headless bot script (7 bots + 1 late joiner, 3/room,
+      30-step trials): room splitting, unique seats, room isolation, locking,
+      anti-spoofing, sequential steps at ~100 ms cadence, round 2 runs 1..30 with
+      new episode id, disconnect → noop, no lobby overwrite mid-trial. 24/24 pass,
+      0 tick overruns. (Script not yet committed to the repo.)
+
+KNOWN ISSUES (found this session, not yet fixed)
+- Client: MpeTrial mounts after TRIAL_START has already arrived (the WaitingRoom
+  consumes it), so the round's countdown timer never appears. Also the client's
+  "duration" in expTimeline is ignored; trial length = HORIZON x TICK_MS.
+- If the sidecar is down when a room is created, that room's init promise stays
+  rejected and the room can never start (no retry). Players see an ERROR.
+- Pre-existing: old grid files (engine.ts, map.ts, state.ts, engine.test.ts)
+  fail typecheck against the current shared types; dead code slated for removal.
+- A page refresh still means a new player ID and a lost seat (reconnection is
+  roadmap §3).
+

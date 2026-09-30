@@ -25,7 +25,7 @@ def test_spec_and_reset():
 def test_invalid_action_rejected():
     env = create_env()
     requests.post(f"{BASE}/env/reset", json={"env_id":env})
-    bad = requests.post(f"{BASE}/env/step", json={"env_id":env,"actions":{"agent_0":99}})
+    bad = requests.post(f"{BASE}/env/step", json={"env_id":env,"actions":{"agent_0":99,"agent_1":0,"agent_2":0}})
     assert bad.status_code == 400
 
 def test_deterministic_fixed_actions():
@@ -51,3 +51,24 @@ def test_horizon_done():
             json={"env_id": env, "actions": {"agent_0": 1, "agent_1": 1, "agent_2": 1}},
         ).json()
     assert out["dones"]["__all__"] is True
+
+def test_episode_id_increments_on_reset():
+    env = create_env()
+    r1 = requests.post(f"{BASE}/env/reset", json={"env_id": env}).json()
+    s1 = requests.post(f"{BASE}/env/step", json={"env_id": env, "actions": {"agent_0": 0, "agent_1": 0, "agent_2": 0}}).json()
+    r2 = requests.post(f"{BASE}/env/reset", json={"env_id": env}).json()
+    assert r1["state"]["episodeId"] == s1["state"]["episodeId"] == "e_0001"
+    assert r2["state"]["episodeId"] == "e_0002"
+    assert r2["state"]["step"] == 0
+
+def test_missing_agent_action_rejected():
+    env = create_env()
+    requests.post(f"{BASE}/env/reset", json={"env_id": env})
+    bad = requests.post(f"{BASE}/env/step", json={"env_id": env, "actions": {"agent_0": 1}})
+    assert bad.status_code == 400
+
+def test_close_frees_env():
+    env = create_env()
+    assert requests.post(f"{BASE}/env/close", json={"env_id": env}).status_code == 200
+    gone = requests.post(f"{BASE}/env/spec", json={"env_id": env})
+    assert gone.status_code == 404

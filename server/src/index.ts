@@ -1,134 +1,95 @@
 {/*
-WebSocket orchestrator for join/assign/ready/actions. Bridges room & sockets.
+WebSocket orchestrator: accepts connections and routes messages to rooms.
+All room/seat/trial logic lives in RoomManager and MpeRoom.
 
 Outputs:
 - On connection: generate playerId, send ASSIGN_ID
-- On JOIN_LOBBY/JOIN_ROOM:
-   A. Ensure single MpeRoom (TODO: CHANGE TO MULTI-ROOM)
-   B. Compute free agent slot (0..N-1)
-   C. Register immediately to reserve slot (avoid overlapping agent IDs)
-   D. Send ASSIGN_ROOM, ASSIGN_AGENT
-   E. Start when ready
-  
-TRIAL_READY: when enough players, start trial in room
-PLAYER_ACTION: call room.receiveAction
-CLOSE: remove from room
+- On JOIN_LOBBY / JOIN_ROOM: place player in a room (RoomManager), then send
+  ASSIGN_ROOM and ASSIGN_AGENT
+- TRIAL_READY: mark player ready in their room; room starts when all seats are ready
+- PLAYER_ACTION: forward to the player's room; the room applies it to the
+  player's OWN agent (any agentId sent by the client is ignored)
+- CLOSE: remove player from their room (empty rooms are disposed)
 
-Edited by: Elizabeth Mieczkowski, Updated: 10/2025
+Edited by: Elizabeth Mieczkowski, Updated: 09/2026
 */}
 
 import { WebSocketServer, WebSocket } from "ws";
-import type {
-  ClientEvent,
-  ServerEvent,
-  AgentID,
-  RoomID,
-  PlayerID,
-} from "../../shared/types";
-import { MpeRoom } from "./game/mpeRoom";
+import type { ClientEvent, ServerEvent, PlayerID } from "../../shared/types";
+import { RoomManager } from "./game/roomManager";
 
 const PORT = Number(process.env.PORT ?? 8080);
+const PLAYERS_PER_ROOM = Number(process.env.REQUIRED_PLAYERS ?? 2);
+const SEED = Number(process.env.SEED ?? 123);
+const HORIZON = Number(process.env.HORIZON ?? 3000); // steps per trial
+
 const wss = new WebSocketServer({ port: PORT });
 
-// TODO: scale to multiple rooms
-const ROOM_ID: RoomID = "room_mpe_1";
-let room: MpeRoom | null = null;
-
-const clients = new Map<PlayerID, { ws: WebSocket; agentId: AgentID | null }>();
-const ready = new Set<PlayerID>();
-const REQUIRED_PLAYERS = Number(process.env.REQUIRED_PLAYERS ?? 2);
+const rooms = new RoomManager(() => ({
+  seed: SEED,
+  num_agents: PLAYERS_PER_ROOM,
+  num_landmarks: 3,
+  horizon: HORIZON,
+}));
 
 function send(ws: WebSocket, msg: ServerEvent) {
-  ws.send(JSON.stringify(msg));
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
-async function ensureRoom(): Promise<MpeRoom> {
-  if (!room) {
-    room = new MpeRoom(ROOM_ID);
-    await room.init({
-      seed: 123,
-      num_agents: REQUIRED_PLAYERS,   
-      num_landmarks: 3,
-      horizon: 3000,                  
-    });
-  }
-  return room;
-}
-
-wss.on("connection", async (ws) => {
+wss.on("connection", (ws) => {
   const playerId: PlayerID = Math.random().toString(36).slice(2);
   send(ws, { type: "ASSIGN_ID", id: playerId });
-  clients.set(playerId, { ws, agentId: null });
 
   ws.on("message", async (buf) => {
+    let msg: ClientEvent;
     try {
-      const msg = JSON.parse(buf.toString()) as ClientEvent;
-
-      // Lobby / Join 
-      if (msg.type === "JOIN_LOBBY" || msg.type === "JOIN_ROOM") {
-        const r = await ensureRoom();
-
-        const max = REQUIRED_PLAYERS;
-        const used = new Set<AgentID>(
-          [...r.clients.values()].map(c => c.agentId).filter(Boolean) as AgentID[]
-        );
-
-        let myAgent: AgentID | null = null;
-        for (let i = 0; i < max; i++) {
-          const id = `agent_${i}` as AgentID;
-          if (!used.has(id)) { myAgent = id; break; }
-        }
-
-        // Register immediately 
-        r.addClient(playerId, (m) => send(ws, m), myAgent);
-
-        clients.set(playerId, { ws, agentId: myAgent });
-        send(ws, { type: "ASSIGN_ROOM", roomId: ROOM_ID });
-        send(ws, { type: "ASSIGN_AGENT", agentId: myAgent });
-
-        return;
-      }
-
-      // Gameplay inputs 
-      if (msg.type === "PLAYER_ACTION") {
-        if (room) room.receiveAction(msg.agentId, msg.action);
-        return;
-      }
-
-      // Screen coordination
-      if (msg.type === "TRIAL_READY") {
-        ready.add(playerId);
-
-        // Start once enough ppl are ready
-        if (room && !room.running && ready.size >= REQUIRED_PLAYERS) {
-          console.log(`[orchestrator] ${ready.size}/${REQUIRED_PLAYERS} ready → starting trial`);
-          await room.startTrial();
-          ready.clear();
-        }
-        return;
-      }
-
+      msg = JSON.parse(buf.toString()) as ClientEvent;
     } catch (e) {
-      try {
-        send(ws, { type: "ERROR", message: `Bad message: ${String(e)}` });
-      } catch {}
+      send(ws, { type: "ERROR", message: `Bad message: ${String(e)}` });
+      return;
+    }
+
+    try {
+      switch (msg.type) {
+        // Lobby / Join
+        case "JOIN_LOBBY":
+        case "JOIN_ROOM": {
+          const roomId = msg.type === "JOIN_ROOM" ? msg.roomId : undefined;
+          const result = rooms.join(playerId, (m) => send(ws, m), roomId);
+          if ("error" in result) {
+            send(ws, { type: "ERROR", message: result.error });
+            return;
+          }
+          send(ws, { type: "ASSIGN_ROOM", roomId: result.room.id });
+          send(ws, { type: "ASSIGN_AGENT", agentId: result.agentId });
+          // Re-send lobby state so this player sees the current roster
+          result.room.broadcastLobbyState();
+          return;
+        }
+
+        // Gameplay inputs
+        case "PLAYER_ACTION":
+          rooms.roomOf(playerId)?.receiveAction(playerId, msg.action);
+          return;
+
+        // Screen coordination
+        case "TRIAL_READY":
+          await rooms.roomOf(playerId)?.markReady(playerId);
+          return;
+      }
+    } catch (e) {
+      console.error(`[orchestrator] error handling ${msg.type} from ${playerId}:`, e);
+      send(ws, { type: "ERROR", message: `Server error: ${String(e)}` });
     }
   });
 
   ws.on("close", () => {
-    room?.removeClient(playerId);
-    clients.delete(playerId);
-    ready.delete(playerId); 
+    rooms.leave(playerId);
   });
 
   ws.on("error", (err) => {
-    try {
-      send(ws, { type: "ERROR", message: String(err) });
-    } catch {}
+    console.warn(`[orchestrator] socket error for ${playerId}:`, err);
   });
 });
 
-console.log(`WS orchestrator listening on ws://127.0.0.1:${PORT}`);
-
-
-
+console.log(`WS orchestrator listening on ws://127.0.0.1:${PORT} (${PLAYERS_PER_ROOM} players/room)`);
