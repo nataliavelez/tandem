@@ -10,7 +10,6 @@ import { ConsentForm } from "../trials/Consent";
 import { Display } from "../trials/Display";
 import { WaitingRoom } from "../trials/WaitingRoom";
 import { MpeTrial } from "../trials/MpeTrial";
-import type { AgentID } from "shared/types";
 // import { PostTest } from "./PostTest";
 
 type Props = {
@@ -19,7 +18,6 @@ type Props = {
 
 export function TrialEngine({ timeline }: Props) {
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [assignedAgentId, _] = useState<AgentID | null>(null);
   const currentTrial: TrialConfig = timeline[currentIndex];
 
   const advance = () => {

@@ -24,6 +24,8 @@ import type {
 
 const TICK_MS = Number(process.env.TICK_MS ?? 100);
 const MAX_CONSECUTIVE_STEP_ERRORS = 20;
+const START_RETRY_MS = 3000;        // wait between attempts when the sidecar is unavailable
+const MAX_START_RETRIES = 40;       // ~2 minutes before giving up
 const NOOP = 0;
 
 export type MpeRoomOptions = {
@@ -41,8 +43,8 @@ export class MpeRoom {
   envId: string | null = null;
   spec: TrialSpec | null = null;
 
-  /** Resolves once the sidecar env exists and has been reset. */
-  readonly ready: Promise<void>;
+  /** In-flight or completed env init; reset to null on failure so it can be retried. */
+  private initPromise: Promise<void> | null = null;
 
   private seats = new Map<PlayerID, Seat>();
   private readyPlayers = new Set<PlayerID>();
@@ -54,13 +56,16 @@ export class MpeRoom {
   private locked = false;
   private disposed = false;
   private trialCount = 0;
+  /** True while waiting on the sidecar before a trial can begin. */
+  private starting = false;
+  private startRetries = 0;
+  private retryTimer: NodeJS.Timeout | null = null;
 
   constructor(id: RoomID, options: MpeRoomOptions) {
     this.id = id;
     this.options = options;
-    this.ready = this.init();
-    // Surface init failures in logs; callers that await `ready` see them too
-    this.ready.catch((e) => console.error(`[room ${id}] init failed:`, e));
+    // Start creating the env right away; if it fails, tryStart() retries later
+    this.ensureReady().catch((e) => console.error(`[room ${id}] init failed:`, e?.message ?? e));
   }
 
   // ----- Seat management -----
@@ -110,13 +115,12 @@ export class MpeRoom {
   async markReady(playerId: PlayerID) {
     if (!this.seats.has(playerId) || this.running) return;
     this.readyPlayers.add(playerId);
+    await this.tryStart();
+  }
 
-    const allSeated = this.seats.size >= this.capacity;
-    const allReady = [...this.seats.keys()].every((p) => this.readyPlayers.has(p));
-    if (allSeated && allReady) {
-      console.log(`[room ${this.id}] ${this.readyPlayers.size}/${this.capacity} ready → starting trial`);
-      await this.startTrial();
-    }
+  private allSeatedAndReady() {
+    return this.seats.size >= this.capacity &&
+      [...this.seats.keys()].every((p) => this.readyPlayers.has(p));
   }
 
   /** Record an action for the player's OWN agent (agent looked up server-side). */
@@ -130,37 +134,79 @@ export class MpeRoom {
 
   // ----- Env / trial lifecycle -----
 
-  private async init() {
-    const create = await envCreate({
-      task: "simple_spread",
-      seed: this.options.seed,
-      num_agents: this.options.num_agents,
-      num_landmarks: this.options.num_landmarks,
-      episode_horizon: this.options.horizon,
-      action_type: "DISCRETE_ACT",
-    });
-    this.envId = create.env_id;
-    this.spec = await envSpec(create.env_id);
-    await envReset(create.env_id);
-    // Room may have been disposed while we were waiting on the sidecar
-    if (this.disposed) await envClose(create.env_id).catch(() => {});
+  /** Create the sidecar env once; if that fails, the next call tries again. */
+  private ensureReady(): Promise<void> {
+    if (!this.initPromise) {
+      this.initPromise = this.init().catch((e) => {
+        this.initPromise = null;
+        throw e;
+      });
+    }
+    return this.initPromise;
   }
 
-  private async startTrial() {
-    if (this.running) return;
-    this.running = true;   // set before any await so concurrent readies can't double-start
-    this.locked = true;
-    this.readyPlayers.clear();
-
+  private async init() {
+    let envId: string | null = null;
     try {
-      await this.ready;
+      const create = await envCreate({
+        task: "simple_spread",
+        seed: this.options.seed,
+        num_agents: this.options.num_agents,
+        num_landmarks: this.options.num_landmarks,
+        episode_horizon: this.options.horizon,
+        action_type: "DISCRETE_ACT",
+      });
+      envId = create.env_id as string;
+      const spec = await envSpec(envId);
+      await envReset(envId);
+      this.envId = envId;
+      this.spec = spec;
     } catch (e) {
-      this.running = false;
-      this.broadcast({ type: "ERROR", message: `Room failed to initialize: ${String(e)}` });
+      // Don't leak a half-initialized env in the sidecar
+      if (envId) await envClose(envId).catch(() => {});
+      throw e;
+    }
+    // Room may have been disposed while we were waiting on the sidecar
+    if (this.disposed) await envClose(envId).catch(() => {});
+  }
+
+  /**
+   * Start a trial if every seat is filled and ready. Waits for the env; if the
+   * sidecar is unavailable, retries on a timer (clients send ready only once,
+   * so the room must retry by itself).
+   */
+  private async tryStart() {
+    if (this.running || this.starting || this.disposed || !this.allSeatedAndReady()) return;
+    this.starting = true;
+    try {
+      await this.ensureReady();
+    } catch (e: any) {
+      this.starting = false;
+      this.startRetries++;
+      if (this.startRetries > MAX_START_RETRIES) {
+        console.error(`[room ${this.id}] giving up: environment unavailable`);
+        this.broadcast({ type: "ERROR", message: "The game environment is unavailable. Please contact the experimenter." });
+        return;
+      }
+      console.warn(`[room ${this.id}] env unavailable (attempt ${this.startRetries}), retrying in ${START_RETRY_MS}ms:`, e?.message ?? e);
+      this.broadcast({ type: "ERROR", message: "Game environment is starting up; retrying…" });
+      this.retryTimer = setTimeout(() => { this.retryTimer = null; void this.tryStart(); }, START_RETRY_MS);
       return;
     }
-    if (this.disposed || !this.spec) { this.running = false; return; }
+    this.starting = false;
+    this.startRetries = 0;
+    // Someone may have left (or the room closed) while we waited on the sidecar
+    if (this.disposed || !this.allSeatedAndReady()) return;
+    console.log(`[room ${this.id}] ${this.readyPlayers.size}/${this.capacity} ready → starting trial`);
+    this.beginTrial();
+  }
 
+  /** Synchronous so two callers can never both start a trial. */
+  private beginTrial() {
+    if (this.running || !this.spec) return;
+    this.running = true;
+    this.locked = true;
+    this.readyPlayers.clear();
     this.trialCount++;
     this.lastActions.clear();
 
@@ -263,6 +309,7 @@ export class MpeRoom {
     if (this.disposed) return;
     this.disposed = true;
     this.running = false;
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
     if (this.loopTimer) { clearTimeout(this.loopTimer); this.loopTimer = null; }
     if (this.envId) await envClose(this.envId).catch(() => {});
   }

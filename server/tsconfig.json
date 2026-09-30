@@ -11,8 +11,7 @@
     "skipLibCheck": true,
     "baseUrl": ".",                            // Enables absolute paths
     "paths": {
-      "shared/*": ["../shared/*"],            // Shared code from the shared directory
-      "server-types": ["./types"]             
+      "shared/*": ["../shared/*"]             // Shared code from the shared directory
     }
   },
   "include": ["src", "../client/src/hooks/useActionBinding.ts", "../client/src/components/engine/ActionLoop.tsx"],

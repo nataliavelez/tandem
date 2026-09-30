@@ -95,14 +95,73 @@ Session 2026-09-30 — Multiplayer backend fixes (roadmap §1)
       new episode id, disconnect → noop, no lobby overwrite mid-trial. 24/24 pass,
       0 tick overruns. (Script not yet committed to the repo.)
 
-KNOWN ISSUES (found this session, not yet fixed)
-- Client: MpeTrial mounts after TRIAL_START has already arrived (the WaitingRoom
-  consumes it), so the round's countdown timer never appears. Also the client's
-  "duration" in expTimeline is ignored; trial length = HORIZON x TICK_MS.
-- If the sidecar is down when a room is created, that room's init promise stays
-  rejected and the room can never start (no retry). Players see an ERROR.
-- Pre-existing: old grid files (engine.ts, map.ts, state.ts, engine.test.ts)
-  fail typecheck against the current shared types; dead code slated for removal.
+KNOWN ISSUES (found this session; see resolutions below)
+- [FIXED below] Client countdown timer never appears (MpeTrial mounts after TRIAL_START).
+- Client "duration" in expTimeline is ignored; trial length = HORIZON x TICK_MS
+  (to be addressed with the server-side experiment timeline, roadmap §2).
+- [FIXED below] Room can never start if the sidecar was down at room creation.
+- [FIXED below] Old grid files fail typecheck.
 - A page refresh still means a new player ID and a lost seat (reconnection is
   roadmap §3).
+
+------------------------------------------------------------
+Session 2026-09-30 (cont.) — Housekeeping + known-issue fixes
+------------------------------------------------------------
+
+[chore] Committed backend fixes as bed2da8d on branch mpe.
+
+[test] Bot integration test added to the repo: server/test/bots.js, run with
+      `npm run test:bots` in server/ (server started with PORT=8090
+      REQUIRED_PLAYERS=3 HORIZON=30; BOTS_URL overrides the address). Replaced
+      fixed sleeps with event waits: on a cold sidecar, env creation can take
+      several seconds, which made the fixed-sleep version fail spuriously.
+      24/24 pass.
+      Files: server/test/bots.js (new), server/package.json
+
+[bug] Client countdown timer never appeared. WaitingRoom advances on
+      TRIAL_START, so MpeTrial mounted after the message it waited for. The
+      socket provider now caches the active trial (spec, start time, duration)
+      on TRIAL_START and clears it on TRIAL_END; MpeTrial runs its countdown and
+      reads its spec from that cache.
+      Files: client/src/context/socketContext.ts, client/src/context/SocketProvider.tsx,
+             client/src/components/trials/MpeTrial.tsx
+      Note: typechecked but not yet verified in a browser. The countdown uses
+      the server's start timestamp against the client clock, so a skewed client
+      clock shifts the displayed time (pre-existing behavior).
+
+[bug] A room could never start if the sidecar was unavailable when the room
+      was created: the one-shot init promise stayed rejected. Init is now
+      retryable (ensureReady). When all players are ready, the room waits for
+      the env, and if the sidecar is down it retries every 3 s (up to ~2 min)
+      by itself, since clients send ready only once. Players get an ERROR
+      message while it retries. A half-created env is closed if init fails
+      partway. Trial start is split into tryStart (async, waits and retries)
+      and beginTrial (synchronous, so it can never double-start).
+      Verified: sidecar stopped → 3 bots ready → 7 retries → sidecar restarted
+      → trial started on its own and ran all 30 steps.
+      Files: server/src/game/mpeRoom.ts
+
+[chore] Removed dead code from the pre-MPE grid prototype: server/src/game/
+      room.ts, trial.ts, engine.ts, engine.test.ts, map.ts, state.ts, and
+      server/server-types.ts (+ stale "server-types" tsconfig path). The full
+      server project typecheck now passes (it failed before on these files).
+      Files: server/src/game/*, server/server-types.ts, server/tsconfig.json
+
+[chore] Uninstalled unused server dependencies socket.io, @hathora/server-sdk
+      and uuid (only the deleted room.ts used uuid). npm updated both
+      package-lock.json and yarn.lock.
+      Files: server/package.json, server/package-lock.json, server/yarn.lock
+
+[bug] Client build (`tsc -b`) failed on an unused `assignedAgentId` state in
+      TrialEngine. Removed it; the client typecheck now passes.
+      Files: client/src/components/engine/TrialEngine.tsx
+
+KNOWN ISSUES (open)
+- Client "duration" in expTimeline ignored (roadmap §2).
+- Page refresh = new player ID and a lost seat (roadmap §3).
+- server/ and client/ each have both npm and yarn lockfiles; worth picking
+  one package manager so they can't drift apart.
+- Root package.json "test" runs vitest, but no vitest tests remain after the
+  grid code was removed.
+- Countdown timer fix not yet checked in a browser.
 

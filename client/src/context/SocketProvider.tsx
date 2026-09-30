@@ -7,7 +7,7 @@ Edited by: Elizabeth Mieczkowski, Updated: 10/2025
 */}
 
 import React, { useEffect, useState, useCallback, useRef } from "react";
-import { SocketContext } from "./socketContext";
+import { SocketContext, type ActiveTrial } from "./socketContext";
 import type { ServerEvent, TrialSpec, AgentID } from "shared/types";
 
 const WS_URL = import.meta.env.VITE_SERVER_URL ?? "ws://127.0.0.1:8080";
@@ -21,6 +21,9 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [agentId, setAgentId] = useState<AgentID | null>(null);
   const [trialSpec, setTrialSpec] = useState<TrialSpec | null>(null);
   const [trialStart, setTrialStart] = useState<number | null>(null);
+  // Cached so screens that mount after TRIAL_START (e.g. MpeTrial, which mounts
+  // when WaitingRoom advances on TRIAL_START) can still sync their timer.
+  const [activeTrial, setActiveTrial] = useState<ActiveTrial | null>(null);
   const [socket, setSocket] = useState<WebSocket | null>(null);
 
   const listenersRef = useRef<Set<(msg: ServerEvent) => void>>(new Set());
@@ -75,7 +78,9 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       else if (msg.type === "TRIAL_START") {
         setTrialSpec(msg.spec);
         setTrialStart(msg.startTimestamp);
+        setActiveTrial({ startTimestamp: msg.startTimestamp, duration: msg.duration, spec: msg.spec });
       }
+      else if (msg.type === "TRIAL_END") setActiveTrial(null);
     };
     listenersRef.current.add(captureForState);
 
@@ -92,6 +97,7 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         agentId,
         trialSpec,
         trialStart,
+        activeTrial,
         addMessageListener,
         removeMessageListener,
       }}

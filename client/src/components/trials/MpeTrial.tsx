@@ -2,12 +2,13 @@
 The game screen for an MPE round (to render canvas, timer, and actions).
 
 Inputs (props): { round: number; durationMs: number; onNext: () => void }
-Reads from context: socket, agentId, trialSpec
+Reads from context: socket, agentId, activeTrial (cached TRIAL_START: spec, start, duration)
 
 Outputs:
 - Sends TRIAL_READY when mounted for this round
+- Countdown timer runs from activeTrial (TRIAL_START often arrives before this
+  screen mounts, since WaitingRoom advances on it)
 - Subscribes to server events
-- TRIAL_START: seeds spec, starts countdown timer
 - STATE_UPDATE: updates state (drawn by canvas)
 - TRIAL_END: clears timer, calls onNext()
 - Renders <ActionLoop> once socket && agentId && spec are ready
@@ -113,16 +114,12 @@ function MpeCanvas({
 }
 
 export function MpeTrial({ round, durationMs, onNext }: Props) {
-  const { socket, addMessageListener, removeMessageListener, agentId, trialSpec } = useSocket();
+  const { socket, addMessageListener, removeMessageListener, agentId, activeTrial } = useSocket();
 
   const [state, setState] = useState<PublicState | null>(null);
-  const [spec, setSpec] = useState<TrialSpec | null>(null);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
-  const timerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    if (trialSpec && !spec) setSpec(trialSpec);
-  }, [trialSpec, spec]);
+  // Spec comes from the cached TRIAL_START, which may have arrived before this screen mounted
+  const spec: TrialSpec | null = activeTrial?.spec ?? null;
 
   useEffect(() => {
     if (!socket) return;
@@ -134,47 +131,32 @@ export function MpeTrial({ round, durationMs, onNext }: Props) {
     socket.send(JSON.stringify(msg));
   }, [socket, round, durationMs]);
 
+  // Countdown, driven by the active trial (works whether TRIAL_START came before or after mount)
+  useEffect(() => {
+    if (!activeTrial) { setTimeLeft(null); return; }
+    const expectedEnd = activeTrial.startTimestamp + (activeTrial.duration ?? durationMs);
+    const updateTime = () => {
+      setTimeLeft(Math.ceil(Math.max(0, expectedEnd - Date.now()) / 1000));
+    };
+    updateTime();
+    const timer = window.setInterval(updateTime, 1000);
+    return () => clearInterval(timer);
+  }, [activeTrial, durationMs]);
+
   // Listen for server events
   useEffect(() => {
     const handle = (message: ServerEvent) => {
-      if (message.type === "TRIAL_START") {
-        setSpec(message.spec);
-        const duration = message.duration ?? durationMs;
-        const expectedEnd = message.startTimestamp + duration;
-
-        const updateTime = () => {
-          const now = Date.now();
-          const remaining = Math.max(0, expectedEnd - now);
-          setTimeLeft(Math.ceil(remaining / 1000));
-        };
-        if (timerRef.current) clearInterval(timerRef.current);
-        updateTime();
-        timerRef.current = window.setInterval(updateTime, 1000);
-      }
-
       if (message.type === "STATE_UPDATE") {
         setState(message.state);
       }
-
       if (message.type === "TRIAL_END") {
-        if (timerRef.current) {
-          clearInterval(timerRef.current);
-          timerRef.current = null;
-        }
-        setTimeLeft(null);
         onNext();
       }
     };
 
     addMessageListener(handle);
-    return () => {
-      removeMessageListener(handle);
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-    };
-  }, [addMessageListener, removeMessageListener, onNext, durationMs]);
+    return () => removeMessageListener(handle);
+  }, [addMessageListener, removeMessageListener, onNext]);
 
   console.log("socket", !!socket, "assignedAgentId", agentId, "spec", spec);
   
