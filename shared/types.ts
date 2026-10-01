@@ -20,7 +20,8 @@ export type PublicAgentState = {
 export interface LobbyState {
   phase: "lobby";
   roomId: RoomID | null;
-  players: Record<PlayerID, { id: PlayerID; name?: string }>;
+  // connected=false while a disconnected player's seat is being held for them
+  players: Record<PlayerID, { id: PlayerID; name?: string; connected?: boolean }>;
   playerCount: number;
   maxParticipants?: number;
 }
@@ -60,6 +61,10 @@ export type MpeClientEvent =
 
 // Core client -> server (lobby/session control)
 export type CoreClientEvent =
+  // First message on every connection: who this is. participantId is stable
+  // across refreshes/reconnects (e.g. Prolific PID), so the server can restore
+  // the player's seat. meta holds recruitment info to log (study/session ids).
+  | { type: "HELLO"; participantId: string; meta?: Record<string, string> }
   | { type: "JOIN_LOBBY"; playerName?: string }                 // no roomId: server assigns
   | { type: "JOIN_ROOM"; roomId: RoomID; playerName?: string }  // explicit room join
   | { type: "PLAYER_WAITING"; playerId: PlayerID }
@@ -82,6 +87,15 @@ export type CoreServerEvent =
   | { type: "TRIAL_END"; trialId: string }
   | { type: "BROADCAST_MESSAGE"; message: string; from?: string }
   | { type: "PLAYER_LEFT"; playerId: PlayerID }
-  | { type: "ERROR"; message: string };
+  | { type: "ERROR"; message: string }
+  // Reply to HELLO.
+  //  new:     server has no seat for this participant
+  //  resumed: seat restored; running/trialsCompleted let the client jump to the right screen
+  //           (if running, a TRIAL_START for the current trial follows)
+  //  ended:   participant can't continue (seat expired after a long disconnect, or
+  //           the session was taken over by another tab); client should stop
+  | { type: "SESSION_STATUS"; status: "new" }
+  | { type: "SESSION_STATUS"; status: "resumed"; roomId: RoomID; agentId: AgentID; running: boolean; trialsCompleted: number }
+  | { type: "SESSION_STATUS"; status: "ended"; reason: string };
 
 export type ServerEvent = CoreServerEvent | MpeServerEvent;

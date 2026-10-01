@@ -29,9 +29,17 @@ export function WaitingRoom({ config, onRoomAssigned }: Props) {
   const advancedRef = useRef(false);
   const sentReadyRef = useRef(false);
   const openHandlerRef = useRef<((this: WebSocket, ev: Event) => any) | null>(null);
+  // A reconnect gives us a new socket: re-join and re-confirm ready on it
+  // (the server forgets readiness when a player disconnects).
+  const joinedSocketRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
     if (!socket) return;
+    if (joinedSocketRef.current !== socket) {
+      joinedSocketRef.current = socket;
+      sentJoinRef.current = false;
+      sentReadyRef.current = false;
+    }
 
     const handleMessage = (message: ServerEvent) => {
       if (message.type === "ASSIGN_ROOM") {

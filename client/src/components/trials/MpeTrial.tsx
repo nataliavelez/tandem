@@ -121,6 +121,7 @@ export function MpeTrial({ round, durationMs, onNext }: Props) {
   // Spec comes from the cached TRIAL_START, which may have arrived before this screen mounted
   const spec: TrialSpec | null = activeTrial?.spec ?? null;
 
+  // Signal ready on every (re)connected socket; a new socket may still be connecting
   useEffect(() => {
     if (!socket) return;
     const msg: ClientEvent = {
@@ -128,7 +129,13 @@ export function MpeTrial({ round, durationMs, onNext }: Props) {
       trialId: `mpe-trial-${round}`,
       duration: Math.ceil(durationMs / 1000),
     };
-    socket.send(JSON.stringify(msg));
+    const sendReady = () => socket.send(JSON.stringify(msg));
+    if (socket.readyState === WebSocket.OPEN) {
+      sendReady();
+      return;
+    }
+    socket.addEventListener("open", sendReady, { once: true });
+    return () => socket.removeEventListener("open", sendReady);
   }, [socket, round, durationMs]);
 
   // Countdown, driven by the active trial (works whether TRIAL_START came before or after mount)

@@ -7,10 +7,14 @@ MPE game lifecycle and sidecar interaction for ONE room (one group of players).
 - Runs a serialized tick loop (next step is scheduled only after the previous
   sidecar call returns, so steps can never overlap or arrive out of order).
 - Resets the env after each trial so the next round starts from step 0.
+- Holds a disconnected player's seat (markDisconnected) so they can come back
+  (reattach); the RoomManager decides how long to hold it.
+- Writes every event and tick to a per-room JSONL data log (DataLog).
 
 Created by: Elizabeth Mieczkowski, Updated: 09/2026
 */}
 import { envCreate, envSpec, envReset, envStep, envClose } from "./sidecarClient";
+import { DataLog } from "./dataLog";
 import type {
   PublicState,
   TrialSpec,
@@ -35,7 +39,16 @@ export type MpeRoomOptions = {
   horizon: number;
 };
 
-type Seat = { send: (msg: ServerEvent) => void; agentId: AgentID };
+type Seat = {
+  send: (msg: ServerEvent) => void;
+  agentId: AgentID;
+  /** false while the player is disconnected and their seat is being held */
+  connected: boolean;
+};
+
+const DISCONNECTED_SEND = () => {};
+
+type TrialStartMsg = Extract<ServerEvent, { type: "TRIAL_START" }>;
 
 export class MpeRoom {
   readonly id: RoomID;
@@ -60,10 +73,16 @@ export class MpeRoom {
   private starting = false;
   private startRetries = 0;
   private retryTimer: NodeJS.Timeout | null = null;
+  /** The current trial's TRIAL_START, re-sent to players who reconnect mid-trial. */
+  private currentTrialStart: TrialStartMsg | null = null;
+
+  readonly log: DataLog;
 
   constructor(id: RoomID, options: MpeRoomOptions) {
     this.id = id;
     this.options = options;
+    this.log = new DataLog(id);
+    this.log.write("room_created", { options, tickMs: TICK_MS });
     // Start creating the env right away; if it fails, tryStart() retries later
     this.ensureReady().catch((e) => console.error(`[room ${id}] init failed:`, e?.message ?? e));
   }
@@ -74,6 +93,9 @@ export class MpeRoom {
   get capacity() { return this.options.num_agents; }
   get isRunning() { return this.running; }
   get isEmpty() { return this.seats.size === 0; }
+  /** True once the first trial has started; the group is then fixed. */
+  get isLocked() { return this.locked; }
+  get trialsCompleted() { return this.trialCount - (this.running ? 1 : 0); }
   /** Can a new player be placed here? */
   get isOpen() { return !this.locked && !this.disposed && this.seats.size < this.capacity; }
 
@@ -84,7 +106,7 @@ export class MpeRoom {
    * Seat a player on the lowest free agent slot. Synchronous so two joins
    * can't claim the same slot. Returns null if the room is full/locked.
    */
-  addPlayer(playerId: PlayerID, send: (msg: ServerEvent) => void): AgentID | null {
+  addPlayer(playerId: PlayerID, send: (msg: ServerEvent) => void, meta?: Record<string, string>): AgentID | null {
     if (this.seats.has(playerId)) return this.seats.get(playerId)!.agentId;
     if (!this.isOpen) return null;
 
@@ -96,19 +118,57 @@ export class MpeRoom {
     }
     if (!agentId) return null;
 
-    this.seats.set(playerId, { send, agentId });
+    this.seats.set(playerId, { send, agentId, connected: true });
+    this.log.write("player_joined", { participantId: playerId, agentId, meta: meta ?? {} });
     this.broadcastLobbyState();
     return agentId;
   }
 
-  removePlayer(playerId: PlayerID) {
+  /**
+   * Free a seat for good. reason: "left" (lobby timeout) or "dropped" (gave up
+   * waiting for a disconnected player after the group was locked).
+   */
+  removePlayer(playerId: PlayerID, reason: "left" | "dropped" = "left") {
     const seat = this.seats.get(playerId);
     if (!seat) return;
     this.seats.delete(playerId);
     this.readyPlayers.delete(playerId);
     // A departed player's agent must not keep executing their last held key
     this.lastActions.set(seat.agentId, NOOP);
+    this.log.write(`player_${reason}`, { participantId: playerId, agentId: seat.agentId, trial: this.trialCount, running: this.running });
     this.broadcastLobbyState();
+  }
+
+  /** Socket closed: keep the seat, but stop sending to it and noop its agent. */
+  markDisconnected(playerId: PlayerID) {
+    const seat = this.seats.get(playerId);
+    if (!seat || !seat.connected) return;
+    seat.connected = false;
+    seat.send = DISCONNECTED_SEND;
+    // Must re-confirm readiness on return (the room shouldn't start without them)
+    this.readyPlayers.delete(playerId);
+    this.lastActions.set(seat.agentId, NOOP);
+    this.log.write("player_disconnected", { participantId: playerId, agentId: seat.agentId, trial: this.trialCount, running: this.running });
+    this.broadcastLobbyState();
+  }
+
+  /**
+   * Player is back (new socket). Restores their seat and, if a trial is
+   * running, re-sends its TRIAL_START so their screen can sync.
+   */
+  reattach(playerId: PlayerID, send: (msg: ServerEvent) => void, how: "reconnected" | "replaced") {
+    const seat = this.seats.get(playerId);
+    if (!seat) return null;
+    seat.send = send;
+    seat.connected = true;
+    this.log.write(`player_${how}`, { participantId: playerId, agentId: seat.agentId, trial: this.trialCount, running: this.running });
+    return { agentId: seat.agentId, running: this.running, trialsCompleted: this.trialsCompleted };
+  }
+
+  /** Send the current TRIAL_START (if any) to one player, e.g. after reattach. */
+  resendTrialStart(playerId: PlayerID) {
+    const seat = this.seats.get(playerId);
+    if (seat && this.running && this.currentTrialStart) seat.send(this.currentTrialStart);
   }
 
   /** Mark a player ready; starts the trial when every seat is filled and ready. */
@@ -210,12 +270,21 @@ export class MpeRoom {
     this.trialCount++;
     this.lastActions.clear();
 
-    this.broadcast({
+    const startMsg: TrialStartMsg = {
       type: "TRIAL_START",
       startTimestamp: Date.now(),
       duration: this.options.horizon * TICK_MS,
       spec: this.spec,
+    };
+    this.currentTrialStart = startMsg;
+    this.log.write("trial_start", {
+      trial: this.trialCount,
+      startTimestamp: startMsg.startTimestamp,
+      duration: startMsg.duration,
+      spec: this.spec,
+      players: this.seatSummary(),
     });
+    this.broadcast(startMsg);
 
     this.scheduleTick(Date.now());
   }
@@ -233,6 +302,7 @@ export class MpeRoom {
     if (!this.running || !this.envId || !this.spec) return;
 
     let finishedEpisode: string | null = null;
+    let endReason: "horizon" | "done" | "aborted" = "horizon";
     try {
       const actions: Record<string, number> = {};
       for (let i = 0; i < this.capacity; i++) {
@@ -240,7 +310,9 @@ export class MpeRoom {
         actions[a] = this.lastActions.get(a) ?? NOOP;
       }
 
+      const stepStart = Date.now();
       const stepResp = await envStep(this.envId, actions);
+      const stepLatencyMs = Date.now() - stepStart;
       this.consecutiveErrors = 0;
       if (!this.running) return; // trial stopped while the step was in flight
 
@@ -258,26 +330,47 @@ export class MpeRoom {
         }
       }
 
+      const serverTime = Date.now();
       this.broadcast({
         type: "STATE_UPDATE",
         state: running as PublicState,
         tick: running.step,
-        serverTime: Date.now(),
+        serverTime,
+      });
+
+      // One line per tick: what every agent did and where everything ended up
+      const connected: Record<string, boolean> = {};
+      for (const seat of this.seats.values()) connected[seat.agentId] = seat.connected;
+      this.log.write("tick", {
+        trial: this.trialCount,
+        episodeId: running.episodeId,
+        step: running.step,
+        serverTime,
+        stepLatencyMs,
+        actions,
+        connected,          // agents with no seat (player left) are absent
+        agents: running.agents,
+        landmarks: running.landmarks,
+        rewards: stepResp.rewards ?? null,
       });
 
       const limit = this.spec.max_steps ?? this.options.horizon;
-      if (running.step >= limit || stepResp.dones?.__all__) finishedEpisode = running.episodeId;
+      if (running.step >= limit || stepResp.dones?.__all__) {
+        finishedEpisode = running.episodeId;
+        endReason = running.step >= limit ? "horizon" : "done";
+      }
     } catch (e: any) {
       this.consecutiveErrors++;
       console.error(`[room ${this.id}] step failed (${this.consecutiveErrors}):`, e?.message ?? e);
       if (this.consecutiveErrors >= MAX_CONSECUTIVE_STEP_ERRORS) {
         this.broadcast({ type: "ERROR", message: "Game server lost contact with the environment; ending trial." });
         finishedEpisode = `aborted_${this.trialCount}`;
+        endReason = "aborted";
       }
     }
 
     if (finishedEpisode) {
-      await this.stopTrial(finishedEpisode);
+      await this.stopTrial(finishedEpisode, endReason);
       return;
     }
 
@@ -288,11 +381,13 @@ export class MpeRoom {
     this.scheduleTick(Math.max(next, now));
   }
 
-  async stopTrial(episodeId: string) {
+  async stopTrial(episodeId: string, reason: string = "stopped") {
     if (!this.running) return;
     this.running = false;
+    this.currentTrialStart = null;
     if (this.loopTimer) { clearTimeout(this.loopTimer); this.loopTimer = null; }
     this.lastActions.clear();
+    this.log.write("trial_end", { trial: this.trialCount, episodeId, reason, players: this.seatSummary() });
 
     this.broadcast({ type: "TRIAL_END", trialId: episodeId });
 
@@ -311,7 +406,16 @@ export class MpeRoom {
     this.running = false;
     if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
     if (this.loopTimer) { clearTimeout(this.loopTimer); this.loopTimer = null; }
+    this.log.write("room_disposed", { trialsCompleted: this.trialCount });
+    this.log.close();
     if (this.envId) await envClose(this.envId).catch(() => {});
+  }
+
+  /** participantId → { agentId, connected }, for the data log. */
+  private seatSummary() {
+    const out: Record<string, { agentId: AgentID; connected: boolean }> = {};
+    for (const [pid, seat] of this.seats) out[pid] = { agentId: seat.agentId, connected: seat.connected };
+    return out;
   }
 
   // ----- Broadcasting -----
@@ -319,7 +423,7 @@ export class MpeRoom {
   broadcastLobbyState() {
     if (this.running) return; // clients use STATE_UPDATE for the game state mid-trial
     const players: LobbyState["players"] = {};
-    for (const pid of this.seats.keys()) players[pid] = { id: pid };
+    for (const [pid, seat] of this.seats) players[pid] = { id: pid, connected: seat.connected };
     const lobby: LobbyState = {
       phase: "lobby",
       roomId: this.id,

@@ -14,8 +14,14 @@ export type ActiveTrial = {
   spec: TrialSpec;
 };
 
+/** Latest SESSION_STATUS from the server (reply to HELLO). */
+export type SessionStatus = Extract<ServerEvent, { type: "SESSION_STATUS" }>;
+
 export type SocketContextType = {
   socket: WebSocket | null;
+  /** false while the socket is down and the provider is reconnecting */
+  connected: boolean;
+  sessionStatus: SessionStatus | null;
   playerId: string | null;
   agentId: AgentID | null;
   trialSpec: TrialSpec | null;
@@ -27,6 +33,8 @@ export type SocketContextType = {
 
 export const SocketContext = createContext<SocketContextType>({
   socket: null,
+  connected: false,
+  sessionStatus: null,
   playerId: null,
   agentId: null,
   trialSpec: null,

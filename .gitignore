@@ -8,3 +8,5 @@ server/node_modules
 __pycache__/
 *.py[cod]
 *$py.class
+# Experiment data logs (JSONL, one file per room)
+server/data/

@@ -156,12 +156,112 @@ Session 2026-09-30 (cont.) — Housekeeping + known-issue fixes
       TrialEngine. Removed it; the client typecheck now passes.
       Files: client/src/components/engine/TrialEngine.tsx
 
+------------------------------------------------------------
+Session 2026-09-30 (cont.) — Reconnection + data logging (roadmap §3, §4)
+------------------------------------------------------------
+
+[chore] Committed housekeeping as 5c59505f on branch mpe.
+
+[feature] Stable participant identity. The client reads the participant ID
+      from the URL (PROLIFIC_PID, participantId or pid), or generates
+      "anon_..." and keeps it in sessionStorage, so a refresh keeps the ID
+      and a new tab gets a new one (useful for local multi-player testing).
+      STUDY_ID / SESSION_ID URL params are passed along as recruitment meta.
+      A new HELLO {participantId, meta} message is the first message on every
+      connection, and the participant ID is now the player ID everywhere
+      (seats, data log). IDs must be 1–64 chars of [A-Za-z0-9_-]. Clients
+      that skip HELLO still work, with a random non-resumable "anon_" ID
+      (the bot test relies on this).
+      Files: client/src/context/participant.ts (new), shared/types.ts,
+             server/src/index.ts
+
+[feature] Seat holding + reconnection. A closed socket no longer frees the
+      seat. The seat is held for LOBBY_GRACE_MS (default 10 s, room not
+      started) or TRIAL_GRACE_MS (default 30 s, group locked). While held,
+      the agent gets noop, the player is not counted as ready, and lobby state
+      shows them as connected:false. On return the server replies
+      SESSION_STATUS:
+        resumed (roomId, agentId, running, trialsCompleted), plus the ORIGINAL
+                TRIAL_START if a trial is running, so the timer stays in sync
+        new     (no seat: never joined, or lobby grace expired)
+        ended   (locked-group grace expired, or the session was opened in another tab)
+      A participant whose locked-group grace expires is marked ended and
+      cannot be placed in a new group. Second tab with the same ID: the new
+      connection takes over the seat and the old one is told and closed.
+      Files: server/src/game/roomManager.ts, server/src/game/mpeRoom.ts,
+             server/src/index.ts, shared/types.ts
+
+[feature] Client auto-reconnect. Before, the client never reconnected after a
+      dropped socket. SocketProvider now reconnects with backoff (0.5, 1, 2, 4,
+      then every 5 s) and re-sends HELLO, unless the server said the session
+      ended. Screens that need the server show a "Connection lost —
+      reconnecting…" banner meanwhile.
+      Files: client/src/context/SocketProvider.tsx, client/src/context/socketContext.ts,
+             client/src/components/engine/TrialEngine.tsx
+
+[feature] Client resume. TrialEngine keeps the timeline index in
+      sessionStorage (refresh returns to the same screen) and corrects it from
+      SESSION_STATUS:
+        resumed + running     → the mpe entry for the trial in progress
+        resumed + not running → just past the last completed mpe trial
+        new while past the waiting room → back to the waiting room
+        ended → a "Session ended" screen
+      Trial screens are now keyed by trial id, so consecutive mpe trials
+      remount cleanly. advance() is memoized so trial screens no longer
+      re-subscribe on every render.
+      Files: client/src/components/engine/TrialEngine.tsx
+
+[bug] After a reconnect, WaitingRoom never re-joined or re-sent ready, since
+      its "already sent" flags were per component, not per socket. The server
+      forgets readiness on disconnect, so the group would never have started.
+      The flags now reset when the socket changes.
+      Files: client/src/components/trials/WaitingRoom.tsx
+
+[bug] MpeTrial sent TRIAL_READY as soon as the socket changed, which throws
+      if the new socket is still connecting. It now waits for "open".
+      Files: client/src/components/trials/MpeTrial.tsx
+
+[feature] Per-room data log (JSONL). Each room writes
+      <DATA_DIR>/<server start time>_<roomId>.jsonl (default server/data/,
+      gitignored), one JSON object per line: {t, room, event, ...}.
+      Events: room_created (options, tickMs), player_joined (participantId,
+      agentId, meta), player_disconnected / player_reconnected /
+      player_replaced / player_left / player_dropped, trial_start (spec,
+      start time, duration, participant→agent map), tick (every step: trial,
+      episodeId, step, serverTime, stepLatencyMs, actions, connected per agent,
+      agent pos/vel/reward, landmarks, rewards), trial_end (reason: horizon |
+      done | aborted), room_disposed. Writes are synchronous, so a crash
+      loses at most one line. Size: ~1 KB/tick with 3 agents, so I estimate
+      roughly 10–15 MB per 3000-tick trial with 15 agents (not measured).
+      Files: server/src/game/dataLog.ts (new), server/src/game/mpeRoom.ts,
+             .gitignore
+
+[test] server/test/reconnect.js (`npm run test:reconnect`; run the server with
+      LOBBY_GRACE_MS=2000 TRIAL_GRACE_MS=3000). Covers: invalid ID rejected;
+      new/resumed/ended statuses; lobby reconnect keeps the seat; mid-trial
+      reconnect gets the original TRIAL_START and controls the same agent;
+      second tab takeover; between-rounds resume; trial-grace expiry → ended
+      and can't rejoin, seat freed; lobby-grace expiry → new; and the data log
+      contents (events, 30 sequential ticks, connected stretch, meta).
+      29/29 pass. The existing bots test (no HELLO) still passes 24/24.
+      Files: server/test/reconnect.js (new), server/package.json
+
+[verify] Server and client typecheck clean. ESLint was not run: it stalled on
+      this machine's slow filesystem. The client changes are not yet checked
+      in a browser.
+
 KNOWN ISSUES (open)
 - Client "duration" in expTimeline ignored (roadmap §2).
-- Page refresh = new player ID and a lost seat (roadmap §3).
+- If the server restarts mid-session, returning clients get status "new"
+  and go back to the waiting room. They'd form a new group and repeat rounds,
+  and the earlier rounds' data sits in the old run's log files. Fine for
+  development; for real sessions, you may prefer an "ended" screen instead.
+- Mid-trial dropouts (after grace) leave the agent idle for the rest of the
+  trial and in later rounds; no dropout policy yet (roadmap step 7).
+- The client clock is used against the server's start timestamp for the
+  countdown, so clock skew shifts the displayed time.
 - server/ and client/ each have both npm and yarn lockfiles; worth picking
   one package manager so they can't drift apart.
-- Root package.json "test" runs vitest, but no vitest tests remain after the
-  grid code was removed.
-- Countdown timer fix not yet checked in a browser.
-
+- Root package.json "test" runs vitest, but no vitest tests remain.
+- Client changes (countdown timer, reconnect banner, resume) not yet checked
+  in a browser.
