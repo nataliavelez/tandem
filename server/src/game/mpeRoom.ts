@@ -10,15 +10,16 @@ MPE game lifecycle and sidecar interaction for ONE room (one group of players).
 - Holds a disconnected player's seat (markDisconnected) so they can come back
   (reattach); the RoomManager decides how long to hold it.
 - Writes every event and tick to a per-room JSONL data log (DataLog).
-- abort(): if the room can't continue (environment never starts, or is lost
-  mid-trial, or the server is shutting down), ends the study for the whole
-  group with SESSION_STATUS ended/aborted so participants get the paid
-  early-end screen.
+- abort(): if the room can't continue (environment never starts or is lost
+  mid-trial, the group fell below MIN_GROUP_SIZE, or the server is shutting
+  down), ends the study for the whole group with SESSION_STATUS ended/aborted;
+  payment follows the study config (PAY_ABORTED).
 
 Created by: Elizabeth Mieczkowski, Updated: 09/2026
 */}
 import { envCreate, envSpec, envReset, envStep, envClose } from "./sidecarClient";
 import { DataLog } from "./dataLog";
+import { endInfo } from "../studyConfig";
 import type {
   PublicState,
   TrialSpec,
@@ -413,8 +414,8 @@ export class MpeRoom {
 
   /**
    * End the study early for everyone in this room (our failure, not theirs).
-   * Players get SESSION_STATUS ended/aborted, which leads to the paid early-end
-   * screen; then the manager disposes the room.
+   * Players get SESSION_STATUS ended/aborted (paid per PAY_ABORTED); then the
+   * manager disposes the room.
    */
   abort(reason: string) {
     if (this.disposed) return;
@@ -423,7 +424,7 @@ export class MpeRoom {
     if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
     this.log.write("room_aborted", { reason, trial: this.trialCount, running: this.running, players: this.seatSummary() });
     this.running = false;
-    this.broadcast({ type: "SESSION_STATUS", status: "ended", outcome: "aborted", reason });
+    this.broadcast({ type: "SESSION_STATUS", status: "ended", ...endInfo("aborted", reason) });
     this.onAbort(reason);
   }
 

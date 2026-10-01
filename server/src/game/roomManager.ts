@@ -10,16 +10,19 @@ Disconnects: a closed socket does not free the seat right away. The seat is
 held for LOBBY_GRACE_MS (room not started yet) or TRIAL_GRACE_MS (group
 locked). If the player comes back in time they get the same room and agent.
 If not, the seat is freed; for a locked group the participant is also marked
-"ended" (dropped) so a late return gets a clear message instead of a new group.
+"ended" (dropped, paid per PAY_DROPPED) so a late return gets a clear message
+instead of a new group. If drop-outs leave a locked group below MIN_GROUP_SIZE,
+the study is aborted for everyone still in it.
 
 Aborts: if a room can't continue (MpeRoom.abort) or the server shuts down
-(abortAll), every participant in it is marked "ended" (aborted), so a
-reconnect later still lands on the paid early-end screen.
+(abortAll), every participant in it is marked "ended" (aborted, paid per
+PAY_ABORTED), so a reconnect later still lands on the same end screen.
 
-Created by: Elizabeth Mieczkowski, Updated: 09/2026
+Created by: Elizabeth Mieczkowski, Updated: 10/2026
 */}
 import { MpeRoom, type MpeRoomOptions } from "./mpeRoom";
-import type { AgentID, EndOutcome, PlayerID, RoomID, ServerEvent } from "../../../shared/types";
+import type { AgentID, EndInfo, PlayerID, RoomID, ServerEvent } from "../../../shared/types";
+import { endInfo, studyConfig } from "../studyConfig";
 
 const LOBBY_GRACE_MS = Number(process.env.LOBBY_GRACE_MS ?? 10_000);
 const TRIAL_GRACE_MS = Number(process.env.TRIAL_GRACE_MS ?? 30_000);
@@ -29,7 +32,7 @@ export class RoomManager {
   private playerRoom = new Map<PlayerID, RoomID>();
   private graceTimers = new Map<PlayerID, NodeJS.Timeout>();
   /** Participants who can't continue, and why (kept for the server's lifetime). */
-  private ended = new Map<PlayerID, { outcome: EndOutcome; reason: string }>();
+  private ended = new Map<PlayerID, EndInfo>();
   private nextRoomNum = 1;
 
   constructor(private makeOptions: () => MpeRoomOptions) {}
@@ -41,8 +44,13 @@ export class RoomManager {
     return id ? this.rooms.get(id) ?? null : null;
   }
 
-  endedStatus(playerId: PlayerID) {
+  endedStatus(playerId: PlayerID): EndInfo | null {
     return this.ended.get(playerId) ?? null;
+  }
+
+  /** Everyone currently holding a seat (connected or not). */
+  seatedPlayers(): Set<PlayerID> {
+    return new Set(this.playerRoom.keys());
   }
 
   /**
@@ -90,7 +98,7 @@ export class RoomManager {
     this.graceTimers.set(playerId, setTimeout(() => {
       this.graceTimers.delete(playerId);
       console.log(`[rooms] ${playerId} did not return to ${room.id}; freeing seat`);
-      if (locked) this.ended.set(playerId, { outcome: "dropped", reason: "you were disconnected for too long" });
+      if (locked) this.ended.set(playerId, endInfo("dropped", "you left the study or were disconnected for too long"));
       this.leave(playerId, locked ? "dropped" : "left");
     }, graceMs));
   }
@@ -119,6 +127,12 @@ export class RoomManager {
     room.removePlayer(playerId, reason);
     console.log(`[rooms] ${playerId} ${reason} ${room.id} (${room.size}/${room.capacity})`);
 
+    // A started group that's too small to continue: end it for everyone left
+    if (room.isLocked && !room.isEmpty && room.size < studyConfig.minGroupSize) {
+      room.abort(`Too many participants left the group (${room.size} of ${room.capacity} remain).`);
+      return; // abortRoom already freed and disposed the room
+    }
+
     if (room.isEmpty) {
       this.rooms.delete(room.id);
       void room.dispose();
@@ -138,7 +152,7 @@ export class RoomManager {
     for (const pid of room.playerIds()) {
       this.clearGrace(pid);
       this.playerRoom.delete(pid);
-      this.ended.set(pid, { outcome: "aborted", reason });
+      this.ended.set(pid, endInfo("aborted", reason));
     }
     this.rooms.delete(room.id);
     void room.dispose();

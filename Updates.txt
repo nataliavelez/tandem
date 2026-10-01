@@ -328,24 +328,101 @@ Session 2026-09-30 (cont.) — Ending the study early when the server fails
       and the EarlyEnd screen in a browser, and Ctrl-C through `npm run dev`
       (ts-node-dev wrapper); SIGTERM was tested on a plain node process.
 
+------------------------------------------------------------
+Session 2026-10-01 — Per-study payment settings + minimum group size
+------------------------------------------------------------
+
+[chore] Committed early-end handling as 8ec91685 on branch mpe.
+
+[design] Payment policy (decided with the PI):
+        - Server/environment failure, or the group falling below its minimum
+          size → paid (default; configurable per study)
+        - Participant leaves / disconnects past the grace period → not paid
+          (default; configurable per study)
+        - Never got a seat (e.g. still on consent when the server stopped) →
+          never paid
+      Paid participants are redirected to an outcome-specific completion URL.
+      In Prolific, give each outcome its own completion code and set the code's
+      action (e.g. approve automatically) so payment needs no manual review.
+
+[feature] Per-study settings file. The server loads STUDY_CONFIG=<file>
+      (relative to server/; default server/.env if present) before anything
+      reads process.env; shell variables still override the file. If a named
+      file is missing, the server refuses to start. server/studies/example.env
+      documents every setting (group, game, payment, disconnects,
+      infrastructure). Real study files (server/studies/*.env) are gitignored
+      because they hold completion codes. On startup the server logs the group
+      and payment settings, and warns if an outcome is paid but has no URL.
+      Files: server/src/loadEnv.ts (new), server/src/studyConfig.ts (new),
+             server/studies/example.env (new), .gitignore, server/src/index.ts
+
+[feature] Payment settings: PAY_ABORTED (default true) + ABORTED_COMPLETION_URL,
+      PAY_DROPPED (default false) + DROPPED_COMPLETION_URL (optional, e.g. a
+      "request return" code). SESSION_STATUS ended now carries {outcome,
+      reason, paid, completionUrl} (EndInfo), all decided by the server.
+      Completion URLs moved from the client (VITE_*_COMPLETION_URL, removed)
+      to the server, so codes never ship in the client bundle; seated
+      participants receive them only when needed.
+      Files: shared/types.ts, server/src/studyConfig.ts, server/src/game/*.ts,
+             server/src/index.ts, client/src/scripts/studyConfig.ts
+
+[feature] Minimum group size (MIN_GROUP_SIZE, default = REQUIRED_PLAYERS, i.e.
+      any drop-out ends the study). Once a group has started, when a drop-out
+      (grace expired) leaves fewer than MIN_GROUP_SIZE players, the room aborts
+      for everyone remaining ("Too many participants left the group (k of n
+      remain)") → paid per PAY_ABORTED. The drop-outs themselves are "dropped"
+      (not paid by default). This is also the first dropout policy (roadmap
+      step 7): groups no longer continue with idle agents below the minimum.
+      Files: server/src/game/roomManager.ts
+
+[feature] ABORT_POLICY message: when a participant gets (or gets back) a seat,
+      the server tells them whether an abort is paid and where to go. The
+      client saves it in sessionStorage and uses it when it has to end the
+      study on its own (server crashed or restarted). No saved policy = never
+      seated = not paid.
+      Files: shared/types.ts, server/src/index.ts, client/src/context/abortPolicy.ts (new),
+             client/src/context/SocketProvider.tsx, client/src/components/engine/TrialEngine.tsx
+
+[feature] Shutdown: participants with a seat get the room's abort (paid per
+      PAY_ABORTED); participants without one get an unpaid "study no longer
+      available" ending. This also removes the duplicate ended message seated
+      players used to get.
+      Files: server/src/index.ts, server/src/game/roomManager.ts
+
+[feature] Early-end screen reworked around EndInfo: paid → "not your fault,
+      you'll be paid"; dropped → "your session ended because…, please return
+      your submission"; never seated → "study no longer available, please
+      return your submission". With a completion URL, it redirects
+      automatically after 10 s (button to go now).
+      Files: client/src/components/trials/EarlyEnd.tsx
+
+[test] New server/test/groupsize.js (npm run test:groupsize): unseated players
+      get no abort policy; seated players get it; 1 of 3 drops → group
+      continues (min 2); 2nd drops → last player aborted, paid, given the
+      completion URL; returning drop-outs → dropped, unpaid; aborted player
+      returning → still paid; log has 2 player_dropped + room_aborted. 7/7 pass.
+      All tests now share server/test/test.env (STUDY_CONFIG=test/test.env,
+      which also exercises the loader). npm run test:all runs bots (24/24),
+      reconnect (29/29) and groupsize (7/7) back to back; all pass. bots.js now
+      waits out the lobby grace before exiting (its held seats were leaking
+      into the next suite's lobby). Shutdown scenario re-verified: seated
+      players paid with URL; an unseated player not paid. Server and client
+      typecheck clean. Not checked in a browser.
+      Files: server/test/groupsize.js (new), server/test/test.env (new),
+             server/test/bots.js, server/test/reconnect.js, server/package.json
+
 KNOWN ISSUES (open)
-- Normal completion has no completion link yet: the final "debriefing"
-  display has no Prolific redirect (VITE_COMPLETION_URL not wired up).
-- A participant whose OWN connection is down for more than 30 s, then back,
-  gets "dropped" (no payment unless VITE_DROPPED_COMPLETION_URL is set). If
-  they never get back within 45 s, the client can't tell their outage from a
-  server outage and shows the paid "aborted" screen. Expect a few such cases.
-- On shutdown, players in a room get the ended message twice (from the room
-  and from the session sweep); harmless, the client keeps the first.
-- Participants still on pre-waiting-room screens (e.g. consent) when the
-  server shuts down also get the paid "aborted" screen.
+- Client changes (countdown, reconnect banner, resume, early-end screen,
+  auto-redirect) not yet checked in a browser.
+- Normal completion has no completion link yet: the final debrief display has
+  no Prolific redirect.
+- No maximum lobby wait: if a group never fills, participants wait forever.
+- A participant offline 30–45 s gets "dropped" (unpaid); over 45 s the client
+  can't tell their outage from a server outage and ends as aborted (paid per
+  their saved policy). Expect a few such cases.
 - Client "duration" in expTimeline ignored (roadmap §2).
-- Mid-trial dropouts (after grace) leave the agent idle for the rest of the
-  trial and in later rounds; no dropout policy yet (roadmap step 7).
 - The client clock is used against the server's start timestamp for the
   countdown, so clock skew shifts the displayed time.
 - server/ and client/ each have both npm and yarn lockfiles; worth picking
   one package manager so they can't drift apart.
 - Root package.json "test" runs vitest, but no vitest tests remain.
-- Client changes (countdown, reconnect banner, resume, early-end screen) not
-  yet checked in a browser.

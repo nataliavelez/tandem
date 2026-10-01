@@ -92,15 +92,31 @@ export type CoreServerEvent =
   //  new:     server has no seat for this participant
   //  resumed: seat restored; running/trialsCompleted let the client jump to the right screen
   //           (if running, a TRIAL_START for the current trial follows)
-  //  ended:   participant can't continue; client should stop. outcome says why:
-  //             aborted  - the study ended early on our side (server shutdown,
-  //                        environment failure); participant should be paid
-  //             dropped  - they were disconnected longer than the grace period
-  //             replaced - the same participant opened the study in another tab
+  //  ended:   participant can't continue; client should stop (see EndInfo)
   | { type: "SESSION_STATUS"; status: "new" }
   | { type: "SESSION_STATUS"; status: "resumed"; roomId: RoomID; agentId: AgentID; running: boolean; trialsCompleted: number }
-  | { type: "SESSION_STATUS"; status: "ended"; outcome: EndOutcome; reason: string };
+  | ({ type: "SESSION_STATUS"; status: "ended" } & EndInfo)
+  // Sent when a player gets (or gets back) a seat: what to do if the server
+  // disappears without telling anyone (crash). Only seated players receive it,
+  // so the completion URL never ships in the client bundle.
+  | { type: "ABORT_POLICY"; paid: boolean; completionUrl: string | null };
 
+/**
+ * Why a participant's study ended early:
+ *   aborted  - our side: server stopped/crashed, environment failure, or the
+ *              group fell below its minimum size
+ *   dropped  - they were disconnected longer than the grace period (left)
+ *   replaced - they opened the study in another tab
+ */
 export type EndOutcome = "aborted" | "dropped" | "replaced";
+
+/** How an early end is handled; paid/completionUrl come from the study config. */
+export type EndInfo = {
+  outcome: EndOutcome;
+  reason: string;
+  paid: boolean;
+  /** Where to send the participant (e.g. a Prolific completion URL), if anywhere */
+  completionUrl: string | null;
+};
 
 export type ServerEvent = CoreServerEvent | MpeServerEvent;

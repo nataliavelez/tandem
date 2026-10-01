@@ -10,19 +10,22 @@ Resuming after a refresh or reconnect:
                              waiting room if none completed yet)
 
 Ending early (EarlyEnd screen; saved in sessionStorage so a refresh stays there):
-    SESSION_STATUS ended            → its outcome (aborted / dropped / replaced)
+    SESSION_STATUS ended            → as the server says (outcome, paid, URL)
     SESSION_STATUS new while past the waiting room
                                     → aborted: the server restarted and lost the
                                       group; we never re-form groups mid-study
     server unreachable for studyConfig.serverLostTimeoutMs on a multiplayer screen
                                     → aborted
+  For the last two the server can't say whether to pay, so the client uses the
+  ABORT_POLICY the server sent when the participant was seated (none saved =
+  never seated = not paid).
 
 Edited by: Elizabeth Mieczkowski, Updated: 09/2026
 */}
 
 import { useCallback, useEffect, useState } from "react";
 import type { TrialTimeline, TrialConfig } from "client-types";
-import type { EndOutcome } from "shared/types";
+import type { EndInfo } from "shared/types";
 import type { SessionStatus } from "../../context/socketContext";
 import { useSocket } from "../../hooks/useSocket";
 import { ConsentForm } from "../trials/Consent";
@@ -31,6 +34,7 @@ import { WaitingRoom } from "../trials/WaitingRoom";
 import { MpeTrial } from "../trials/MpeTrial";
 import { EarlyEnd } from "../trials/EarlyEnd";
 import { studyConfig } from "../../scripts/studyConfig";
+import { loadAbortPolicy } from "../../context/abortPolicy";
 // import { PostTest } from "./PostTest";
 
 type Props = {
@@ -40,12 +44,10 @@ type Props = {
 const INDEX_KEY = "tandem_timeline_index";
 const EARLY_END_KEY = "tandem_early_end";
 
-type EarlyEndState = { outcome: EndOutcome; reason: string };
-
-function loadEarlyEnd(): EarlyEndState | null {
+function loadEarlyEnd(): EndInfo | null {
   try {
     const raw = sessionStorage.getItem(EARLY_END_KEY);
-    return raw ? (JSON.parse(raw) as EarlyEndState) : null;
+    return raw ? (JSON.parse(raw) as EndInfo) : null;
   } catch {
     return null;
   }
@@ -87,7 +89,7 @@ const NEEDS_SERVER = new Set<TrialConfig["type"]>(["waiting-room", "mpe"]);
 export function TrialEngine({ timeline }: Props) {
   const { sessionStatus, connected } = useSocket();
   const [currentIndex, setCurrentIndex] = useState(() => loadIndex(timeline.length));
-  const [earlyEnd, setEarlyEnd] = useState<EarlyEndState | null>(loadEarlyEnd);
+  const [earlyEnd, setEarlyEnd] = useState<EndInfo | null>(loadEarlyEnd);
   const currentTrial: TrialConfig = timeline[currentIndex];
   const serverIdx = firstServerIndex(timeline);
   // From the waiting room on, the participant's study depends on the server
@@ -97,7 +99,7 @@ export function TrialEngine({ timeline }: Props) {
     try { sessionStorage.setItem(INDEX_KEY, String(currentIndex)); } catch { /* ignore */ }
   }, [currentIndex]);
 
-  const endEarly = useCallback((state: EarlyEndState) => {
+  const endEarly = useCallback((state: EndInfo) => {
     setEarlyEnd((prev) => prev ?? state); // first reason wins
     // "replaced" isn't saved: refreshing this tab should take the study back
     if (state.outcome !== "replaced") {
@@ -108,10 +110,11 @@ export function TrialEngine({ timeline }: Props) {
   useEffect(() => {
     if (!sessionStatus) return;
     if (sessionStatus.status === "ended") {
-      endEarly({ outcome: sessionStatus.outcome, reason: sessionStatus.reason });
+      const { outcome, reason, paid, completionUrl } = sessionStatus;
+      endEarly({ outcome, reason, paid, completionUrl });
     } else if (sessionStatus.status === "new" && serverIdx >= 0 && currentIndex > serverIdx) {
       // We were in a group, but the server no longer knows us: it restarted
-      endEarly({ outcome: "aborted", reason: "The study server was restarted." });
+      endEarly({ outcome: "aborted", reason: "The study server was restarted.", ...loadAbortPolicy() });
     } else {
       setCurrentIndex((i) => resumeIndex(timeline, sessionStatus, i));
     }
@@ -123,7 +126,7 @@ export function TrialEngine({ timeline }: Props) {
   useEffect(() => {
     if (connected || !inMultiplayer || earlyEnd) return;
     const timer = window.setTimeout(() => {
-      endEarly({ outcome: "aborted", reason: "The study server could not be reached." });
+      endEarly({ outcome: "aborted", reason: "The study server could not be reached.", ...loadAbortPolicy() });
     }, studyConfig.serverLostTimeoutMs);
     return () => clearTimeout(timer);
   }, [connected, inMultiplayer, earlyEnd, endEarly]);
@@ -138,7 +141,7 @@ export function TrialEngine({ timeline }: Props) {
   }, [timeline.length]);
 
   if (earlyEnd) {
-    return <EarlyEnd outcome={earlyEnd.outcome} reason={earlyEnd.reason} />;
+    return <EarlyEnd info={earlyEnd} />;
   }
 
   const banner = !connected && NEEDS_SERVER.has(currentTrial.type) ? (

@@ -5,9 +5,9 @@ Connects 7 bots (+1 late joiner) and checks room assignment, room isolation,
 room locking, anti-spoofing, tick cadence, multi-round resets, episode ids,
 and disconnect handling.
 
-Usage (sidecar must be running on :8001):
-  1. PORT=8090 REQUIRED_PLAYERS=3 HORIZON=30 npm run dev     (in server/)
-  2. npm run test:bots                                        (in server/)
+Usage (sidecar must be running on :8001), in server/:
+  1. STUDY_CONFIG=test/test.env npm run dev
+  2. npm run test:bots        (or npm run test:all)
 Override the server address with BOTS_URL=ws://host:port.
 
 Created by: Elizabeth Mieczkowski, Updated: 09/2026
@@ -128,9 +128,10 @@ async function holdAction(b, action, agentId, ms) {
   check(!midTrial.some((m) => m.type === "STATE_UPDATE" && m.state.phase === "lobby"),
     "no lobby-state broadcast overwrote game state mid-trial (after disconnect)");
 
-  // 8. Empty rooms disposed
+  // 8. Leave, then outlast the lobby grace period (test.env: 2 s) so held seats
+  // are freed before the next test suite runs against this server
   for (const b of [...bots, late]) b.ws.close();
-  await sleep(500);
+  await sleep(3500);
   console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
   process.exit(failures ? 1 : 0);
 })();

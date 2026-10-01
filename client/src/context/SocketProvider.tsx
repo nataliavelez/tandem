@@ -7,6 +7,8 @@ Owns the WebSocket and caches key assignments/start info.
   server said the session ended.
 - Caches ASSIGN_ID/ASSIGN_AGENT/TRIAL_START/SESSION_STATUS so screens that mount
   later can read them from context.
+- Saves ABORT_POLICY (sent once seated) to sessionStorage, so the client knows
+  how to end the study even if the server later disappears (see TrialEngine).
 
 The socket is a module-level singleton so React StrictMode's mount → unmount →
 mount in development reuses one socket instead of opening two.
@@ -17,6 +19,7 @@ Edited by: Elizabeth Mieczkowski, Updated: 09/2026
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { SocketContext, type ActiveTrial, type SessionStatus } from "./socketContext";
 import { getParticipantId, getRecruitmentMeta } from "./participant";
+import { saveAbortPolicy } from "./abortPolicy";
 import type { ServerEvent, TrialSpec, AgentID, ClientEvent } from "shared/types";
 
 const WS_URL = import.meta.env.VITE_SERVER_URL ?? "ws://127.0.0.1:8080";
@@ -73,6 +76,7 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setActiveTrial({ startTimestamp: msg.startTimestamp, duration: msg.duration, spec: msg.spec });
       }
       else if (msg.type === "TRIAL_END") setActiveTrial(null);
+      else if (msg.type === "ABORT_POLICY") saveAbortPolicy({ paid: msg.paid, completionUrl: msg.completionUrl });
       else if (msg.type === "SESSION_STATUS") {
         setSessionStatus(msg);
         if (msg.status === "ended") sessionEnded = true;

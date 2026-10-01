@@ -16,18 +16,25 @@ Outputs:
 - PLAYER_ACTION: forward to the player's room; the room applies it to the
   player's OWN agent (any agentId sent by the client is ignored)
 - CLOSE: hold the player's seat for a grace period (RoomManager.disconnect)
-- SIGINT/SIGTERM: end the study early (aborted → paid) for every participant,
-  close the data logs and sidecar envs, then exit
+- SIGINT/SIGTERM: end the study early for every participant (seated: aborted,
+  paid per PAY_ABORTED; not yet seated: not paid), close the data logs and
+  sidecar envs, then exit
+- Seated players also get ABORT_POLICY (paid? where to go?) in case the server
+  later disappears without warning
+
+Settings: see loadEnv.ts / studies/example.env.
 
 Edited by: Elizabeth Mieczkowski, Updated: 09/2026
 */}
 
+import "./loadEnv"; // must be first: other modules read process.env on load
 import { WebSocketServer, WebSocket } from "ws";
 import type { ClientEvent, ServerEvent, PlayerID } from "../../shared/types";
 import { RoomManager } from "./game/roomManager";
+import { studyConfig, endInfo, unseatedEndInfo, checkStudyConfig } from "./studyConfig";
 
 const PORT = Number(process.env.PORT ?? 8080);
-const PLAYERS_PER_ROOM = Number(process.env.REQUIRED_PLAYERS ?? 2);
+const PLAYERS_PER_ROOM = studyConfig.playersPerRoom;
 const SEED = Number(process.env.SEED ?? 123);
 const HORIZON = Number(process.env.HORIZON ?? 3000); // steps per trial
 
@@ -47,6 +54,11 @@ const sessions = new Map<PlayerID, WebSocket>();
 
 function send(ws: WebSocket, msg: ServerEvent) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+}
+
+/** Tell a seated player what happens if the server vanishes (see ABORT_POLICY). */
+function sendAbortPolicy(ws: WebSocket) {
+  send(ws, { type: "ABORT_POLICY", ...studyConfig.payment.aborted });
 }
 
 /** Keep only short string values from client-supplied metadata. */
@@ -74,7 +86,7 @@ wss.on("connection", (ws) => {
     // Same participant already connected elsewhere (second tab, or a refresh
     // that arrived before the old socket closed): the new connection wins.
     if (prev && prev !== ws) {
-      send(prev, { type: "SESSION_STATUS", status: "ended", outcome: "replaced", reason: "This study was opened in another window." });
+      send(prev, { type: "SESSION_STATUS", status: "ended", ...endInfo("replaced", "This study was opened in another window.") });
       prev.close(4000, "replaced");
     }
 
@@ -91,6 +103,7 @@ wss.on("connection", (ws) => {
     }
     send(ws, { type: "ASSIGN_ROOM", roomId: resumed.room.id });
     send(ws, { type: "ASSIGN_AGENT", agentId: resumed.agentId });
+    sendAbortPolicy(ws);
     send(ws, {
       type: "SESSION_STATUS",
       status: "resumed",
@@ -145,6 +158,7 @@ wss.on("connection", (ws) => {
           }
           send(ws, { type: "ASSIGN_ROOM", roomId: result.room.id });
           send(ws, { type: "ASSIGN_AGENT", agentId: result.agentId });
+          sendAbortPolicy(ws);
           // Re-send lobby state so this player sees the current roster
           result.room.broadcastLobbyState();
           return;
@@ -180,8 +194,9 @@ wss.on("connection", (ws) => {
 });
 
 // ----- Graceful shutdown -----
-// A stopped server must not strand anyone: every participant is told the study
-// ended early (on our side), which sends them to the paid early-end screen.
+// A stopped server must not strand anyone: everyone is told the study ended.
+// Seated participants get the room's abort (paid per PAY_ABORTED); participants
+// who never got a seat (e.g. still on consent) are told, but not paid.
 let shuttingDown = false;
 async function shutdown(signal: string) {
   if (shuttingDown) return;
@@ -192,10 +207,11 @@ async function shutdown(signal: string) {
   // Exit even if something below hangs
   setTimeout(() => process.exit(0), 5000).unref();
 
-  await rooms.abortAll("The study server was stopped.");
-  // Participants waiting outside a room (consent, lobby before joining) also get the message
-  for (const ws of sessions.values()) {
-    send(ws, { type: "SESSION_STATUS", status: "ended", outcome: "aborted", reason: "The study server was stopped." });
+  const reason = "The study server was stopped.";
+  const seated = rooms.seatedPlayers();
+  await rooms.abortAll(reason);
+  for (const [pid, ws] of sessions) {
+    if (!seated.has(pid)) send(ws, { type: "SESSION_STATUS", status: "ended", ...unseatedEndInfo(reason) });
     ws.close(1001, "server shutting down"); // close handshake flushes queued messages
   }
   // Give close frames a moment to go out
@@ -205,4 +221,5 @@ async function shutdown(signal: string) {
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
+checkStudyConfig();
 console.log(`WS orchestrator listening on ws://127.0.0.1:${PORT} (${PLAYERS_PER_ROOM} players/room)`);

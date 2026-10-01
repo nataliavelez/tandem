@@ -3,8 +3,8 @@ Headless test for participant identity, reconnection, seat holding, and the
 per-room data log.
 
 Usage (sidecar must be running on :8001), in server/:
-  1. PORT=8090 REQUIRED_PLAYERS=3 HORIZON=30 LOBBY_GRACE_MS=2000 TRIAL_GRACE_MS=3000 npm run dev
-  2. npm run test:reconnect
+  1. STUDY_CONFIG=test/test.env npm run dev
+  2. npm run test:reconnect        (or npm run test:all)
 Set BOTS_URL / DATA_DIR if the server uses a different address / data folder.
 
 Created by: Elizabeth Mieczkowski, Updated: 09/2026

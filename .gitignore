@@ -10,3 +10,7 @@ __pycache__/
 *$py.class
 # Experiment data logs (JSONL, one file per room)
 server/data/
+
+# Per-study settings hold completion codes; only the template is committed
+server/studies/*.env
+!server/studies/example.env

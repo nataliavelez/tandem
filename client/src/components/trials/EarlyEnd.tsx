@@ -1,25 +1,44 @@
 {/*
-Final screen when the study ends before the timeline does.
+Final screen when the study ends before the timeline does. What it says and
+where it sends the participant come from the server's study settings (EndInfo):
 
-  aborted  - our side failed (server stopped, environment failure, server
-             unreachable). Participant is paid: "Complete study" goes to the
-             aborted completion URL.
-  dropped  - participant was disconnected longer than the grace period.
-             Shows a completion button only if a dropped URL is configured.
-  replaced - the study was opened in another tab; continue there.
+  replaced          - opened in another tab; continue there
+  paid              - "not your fault, you'll be paid"; redirect to completionUrl
+  not paid, aborted - study unavailable (e.g. never got into a group); return
+                      the submission
+  not paid, dropped - "your session ended because…"; return the submission
 
-Created by: Elizabeth Mieczkowski, Updated: 09/2026
+With a completionUrl, the page redirects automatically after
+studyConfig.autoRedirectMs (or on the button).
+
+Created by: Elizabeth Mieczkowski, Updated: 10/2026
 */}
 
-import type { EndOutcome } from "shared/types";
+import { useEffect, useState } from "react";
+import type { EndInfo } from "shared/types";
 import { studyConfig } from "../../scripts/studyConfig";
 
-type Props = {
-  outcome: EndOutcome;
-  reason: string;
-};
+type Props = { info: EndInfo };
 
-export function EarlyEnd({ outcome, reason }: Props) {
+export function EarlyEnd({ info }: Props) {
+  const { outcome, reason, paid, completionUrl } = info;
+  const url = outcome === "replaced" ? null : completionUrl;
+  const [secondsLeft, setSecondsLeft] = useState(Math.ceil(studyConfig.autoRedirectMs / 1000));
+
+  useEffect(() => {
+    if (!url) return;
+    const redirectAt = Date.now() + studyConfig.autoRedirectMs;
+    const timer = window.setInterval(() => {
+      const left = Math.ceil((redirectAt - Date.now()) / 1000);
+      setSecondsLeft(Math.max(0, left));
+      if (left <= 0) {
+        clearInterval(timer);
+        window.location.href = url;
+      }
+    }, 250);
+    return () => clearInterval(timer);
+  }, [url]);
+
   if (outcome === "replaced") {
     return (
       <div style={{ padding: "2rem" }}>
@@ -29,33 +48,39 @@ export function EarlyEnd({ outcome, reason }: Props) {
     );
   }
 
-  const url = outcome === "aborted" ? studyConfig.abortedCompletionUrl : studyConfig.droppedCompletionUrl;
-  if (outcome === "aborted" && !url) {
-    console.warn("VITE_ABORTED_COMPLETION_URL is not set; participants can't be sent to a completion page.");
-  }
-
   return (
     <div style={{ padding: "2rem", maxWidth: 640 }}>
       <h2>The study has ended</h2>
-      {outcome === "aborted" ? (
-        <>
-          <p>
-            We're sorry: the study had to end early because of a technical problem on our side.
-            This was not your fault, and you will be paid for your participation.
-          </p>
-          <p style={{ color: "#6b7280" }}>Details: {reason}</p>
-        </>
+
+      {paid ? (
+        <p>
+          We're sorry: the study had to end early because of a technical problem or because
+          too few participants remained. This was not your fault, and you will be paid for
+          your participation.
+        </p>
+      ) : outcome === "dropped" ? (
+        <p>
+          Your session ended because {reason}. Because the study could not be completed, please
+          return your submission.
+        </p>
       ) : (
-        <p>Your session ended because {reason}.</p>
+        <p>
+          The study is no longer available. Please return your submission. We're sorry for the
+          inconvenience.
+        </p>
       )}
+      {paid && <p style={{ color: "#6b7280" }}>Details: {reason}</p>}
 
       {url ? (
-        <button onClick={() => { window.location.href = url; }}>
-          Complete study
-        </button>
-      ) : (
-        <p>Please return to the study page and contact the researcher.</p>
-      )}
+        <>
+          <p>You will be redirected automatically in {secondsLeft} s.</p>
+          <button onClick={() => { window.location.href = url; }}>
+            {paid ? "Complete study now" : "Return to Prolific now"}
+          </button>
+        </>
+      ) : paid ? (
+        <p>Please return to Prolific and message the researcher so we can pay you.</p>
+      ) : null}
     </div>
   );
 }
