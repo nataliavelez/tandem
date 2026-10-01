@@ -411,6 +411,26 @@ Session 2026-10-01 — Per-study payment settings + minimum group size
       Files: server/test/groupsize.js (new), server/test/test.env (new),
              server/test/bots.js, server/test/reconnect.js, server/package.json
 
+------------------------------------------------------------
+Session 2026-10-01 (cont.) — Moved the repo off the Desktop
+------------------------------------------------------------
+
+[chore] Moved the working copy from ~/Desktop/colab-tandem to
+      ~/Code/colab-tandem. Every Node command in the Desktop folder was
+      disk-bound (≈1–3% CPU): the server took minutes to start, typechecks
+      ~4 min, ESLint never finished, and `npm run dev` looked hung in the
+      browser walkthrough. In the new folder: typecheck ~1.3 s, server and
+      sidecar up in ~3 s, client served in ~1 s, npm installs ~2 s.
+      How: git clone of the Desktop repo (all local branches kept: mpe 5 ahead
+      of origin, jaxmarl 1 ahead, main as before), origin re-pointed to
+      github.com/nataliavelez/colab-tandem, fresh `npm ci` in root/server/client,
+      client/.env copied, jaxmarl re-cloned from GitHub at the same commit
+      (0df1722), and the conda env's editable jaxmarl install re-pointed to
+      the new folder (pip install --no-deps -e jaxmarl). The Desktop copy is
+      left in place for now (no longer used by the conda env).
+      Verified in the new folder: sidecar tests 7/7, bots 24/24, reconnect
+      29/29, groupsize 7/7, server and client typecheck clean.
+
 KNOWN ISSUES (open)
 - Client changes (countdown, reconnect banner, resume, early-end screen,
   auto-redirect) not yet checked in a browser.
@@ -423,6 +443,7 @@ KNOWN ISSUES (open)
 - Client "duration" in expTimeline ignored (roadmap §2).
 - The client clock is used against the server's start timestamp for the
   countdown, so clock skew shifts the displayed time.
-- server/ and client/ each have both npm and yarn lockfiles; worth picking
-  one package manager so they can't drift apart.
+- server/ and client/ each have both npm and yarn lockfiles, and they have
+  already drifted: `npm ci` rewrites client/yarn.lock (~1,360 lines) to match
+  package-lock.json (reverted for now). Worth picking one package manager.
 - Root package.json "test" runs vitest, but no vitest tests remain.
