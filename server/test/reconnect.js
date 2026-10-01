@@ -104,7 +104,7 @@ async function holdAction(b, action, ms) {
   const b2 = await bot(ids[1]);
   await waitFor(() => b2.status && b.closed, 3000);
   const endedMsg = b.msgs.find((m) => m.type === "SESSION_STATUS" && m.status === "ended");
-  check(!!endedMsg && b.closed, `old tab told session ended and closed ("${endedMsg?.reason}")`);
+  check(!!endedMsg && endedMsg.outcome === "replaced" && b.closed, `old tab told session ended (replaced) and closed ("${endedMsg?.reason}")`);
   check(b2.status?.status === "resumed" && b2.status.agentId === bAgent, "new tab resumed the same seat");
   b = b2;
 
@@ -125,7 +125,7 @@ async function holdAction(b, action, ms) {
   await sleep(TRIAL_GRACE_MS + 800);
   c = await bot(ids[2]);
   await waitFor(() => c.status);
-  check(c.status.status === "ended", `return after trial grace → ended ("${c.status.reason}")`);
+  check(c.status.status === "ended" && c.status.outcome === "dropped", `return after trial grace → ended/dropped ("${c.status.reason}")`);
   c.send({ type: "JOIN_LOBBY" });
   await waitFor(() => c.msgs.some((m) => m.type === "ERROR"), 2000);
   check(c.msgs.some((m) => m.type === "ERROR" && /Session ended/.test(m.message)) && !c.roomId,

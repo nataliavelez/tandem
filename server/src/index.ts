@@ -16,6 +16,8 @@ Outputs:
 - PLAYER_ACTION: forward to the player's room; the room applies it to the
   player's OWN agent (any agentId sent by the client is ignored)
 - CLOSE: hold the player's seat for a grace period (RoomManager.disconnect)
+- SIGINT/SIGTERM: end the study early (aborted → paid) for every participant,
+  close the data logs and sidecar envs, then exit
 
 Edited by: Elizabeth Mieczkowski, Updated: 09/2026
 */}
@@ -72,13 +74,13 @@ wss.on("connection", (ws) => {
     // Same participant already connected elsewhere (second tab, or a refresh
     // that arrived before the old socket closed): the new connection wins.
     if (prev && prev !== ws) {
-      send(prev, { type: "SESSION_STATUS", status: "ended", reason: "This session was opened in another window." });
+      send(prev, { type: "SESSION_STATUS", status: "ended", outcome: "replaced", reason: "This study was opened in another window." });
       prev.close(4000, "replaced");
     }
 
-    const endedReason = rooms.endedReason(pid);
-    if (endedReason) {
-      send(ws, { type: "SESSION_STATUS", status: "ended", reason: endedReason });
+    const ended = rooms.endedStatus(pid);
+    if (ended) {
+      send(ws, { type: "SESSION_STATUS", status: "ended", ...ended });
       return;
     }
 
@@ -176,5 +178,31 @@ wss.on("connection", (ws) => {
     console.warn(`[orchestrator] socket error for ${playerId}:`, err);
   });
 });
+
+// ----- Graceful shutdown -----
+// A stopped server must not strand anyone: every participant is told the study
+// ended early (on our side), which sends them to the paid early-end screen.
+let shuttingDown = false;
+async function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[orchestrator] ${signal}: ending the study for all participants`);
+  wss.close(); // stop accepting connections
+
+  // Exit even if something below hangs
+  setTimeout(() => process.exit(0), 5000).unref();
+
+  await rooms.abortAll("The study server was stopped.");
+  // Participants waiting outside a room (consent, lobby before joining) also get the message
+  for (const ws of sessions.values()) {
+    send(ws, { type: "SESSION_STATUS", status: "ended", outcome: "aborted", reason: "The study server was stopped." });
+    ws.close(1001, "server shutting down"); // close handshake flushes queued messages
+  }
+  // Give close frames a moment to go out
+  await new Promise((r) => setTimeout(r, 500));
+  process.exit(0);
+}
+process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
 console.log(`WS orchestrator listening on ws://127.0.0.1:${PORT} (${PLAYERS_PER_ROOM} players/room)`);

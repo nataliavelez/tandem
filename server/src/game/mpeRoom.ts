@@ -10,6 +10,10 @@ MPE game lifecycle and sidecar interaction for ONE room (one group of players).
 - Holds a disconnected player's seat (markDisconnected) so they can come back
   (reattach); the RoomManager decides how long to hold it.
 - Writes every event and tick to a per-room JSONL data log (DataLog).
+- abort(): if the room can't continue (environment never starts, or is lost
+  mid-trial, or the server is shutting down), ends the study for the whole
+  group with SESSION_STATUS ended/aborted so participants get the paid
+  early-end screen.
 
 Created by: Elizabeth Mieczkowski, Updated: 09/2026
 */}
@@ -28,8 +32,9 @@ import type {
 
 const TICK_MS = Number(process.env.TICK_MS ?? 100);
 const MAX_CONSECUTIVE_STEP_ERRORS = 20;
-const START_RETRY_MS = 3000;        // wait between attempts when the sidecar is unavailable
-const MAX_START_RETRIES = 40;       // ~2 minutes before giving up
+// Wait between attempts when the sidecar is unavailable; give up (abort) after ~2 min
+const START_RETRY_MS = Number(process.env.START_RETRY_MS ?? 3000);
+const MAX_START_RETRIES = Number(process.env.MAX_START_RETRIES ?? 40);
 const NOOP = 0;
 
 export type MpeRoomOptions = {
@@ -68,6 +73,7 @@ export class MpeRoom {
   /** Once the first trial starts, the group is fixed; new players go elsewhere. */
   private locked = false;
   private disposed = false;
+  private disposing: Promise<void> | null = null;
   private trialCount = 0;
   /** True while waiting on the sidecar before a trial can begin. */
   private starting = false;
@@ -78,7 +84,12 @@ export class MpeRoom {
 
   readonly log: DataLog;
 
-  constructor(id: RoomID, options: MpeRoomOptions) {
+  constructor(
+    id: RoomID,
+    options: MpeRoomOptions,
+    /** Called after abort() has notified players; the manager frees the room. */
+    private onAbort: (reason: string) => void = () => {},
+  ) {
     this.id = id;
     this.options = options;
     this.log = new DataLog(id);
@@ -96,6 +107,7 @@ export class MpeRoom {
   /** True once the first trial has started; the group is then fixed. */
   get isLocked() { return this.locked; }
   get trialsCompleted() { return this.trialCount - (this.running ? 1 : 0); }
+  playerIds(): PlayerID[] { return [...this.seats.keys()]; }
   /** Can a new player be placed here? */
   get isOpen() { return !this.locked && !this.disposed && this.seats.size < this.capacity; }
 
@@ -245,7 +257,7 @@ export class MpeRoom {
       this.startRetries++;
       if (this.startRetries > MAX_START_RETRIES) {
         console.error(`[room ${this.id}] giving up: environment unavailable`);
-        this.broadcast({ type: "ERROR", message: "The game environment is unavailable. Please contact the experimenter." });
+        this.abort("The game could not be started because of a technical problem.");
         return;
       }
       console.warn(`[room ${this.id}] env unavailable (attempt ${this.startRetries}), retrying in ${START_RETRY_MS}ms:`, e?.message ?? e);
@@ -302,7 +314,7 @@ export class MpeRoom {
     if (!this.running || !this.envId || !this.spec) return;
 
     let finishedEpisode: string | null = null;
-    let endReason: "horizon" | "done" | "aborted" = "horizon";
+    let endReason: "horizon" | "done" = "horizon";
     try {
       const actions: Record<string, number> = {};
       for (let i = 0; i < this.capacity; i++) {
@@ -363,9 +375,9 @@ export class MpeRoom {
       this.consecutiveErrors++;
       console.error(`[room ${this.id}] step failed (${this.consecutiveErrors}):`, e?.message ?? e);
       if (this.consecutiveErrors >= MAX_CONSECUTIVE_STEP_ERRORS) {
-        this.broadcast({ type: "ERROR", message: "Game server lost contact with the environment; ending trial." });
-        finishedEpisode = `aborted_${this.trialCount}`;
-        endReason = "aborted";
+        // The env's state is gone or unreliable; the group can't continue
+        this.abort("The game lost contact with its environment because of a technical problem.");
+        return;
       }
     }
 
@@ -399,16 +411,35 @@ export class MpeRoom {
     this.broadcastLobbyState();
   }
 
-  /** Stop everything and free the sidecar env. */
-  async dispose() {
+  /**
+   * End the study early for everyone in this room (our failure, not theirs).
+   * Players get SESSION_STATUS ended/aborted, which leads to the paid early-end
+   * screen; then the manager disposes the room.
+   */
+  abort(reason: string) {
     if (this.disposed) return;
+    console.error(`[room ${this.id}] ABORTING: ${reason}`);
+    if (this.loopTimer) { clearTimeout(this.loopTimer); this.loopTimer = null; }
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
+    this.log.write("room_aborted", { reason, trial: this.trialCount, running: this.running, players: this.seatSummary() });
+    this.running = false;
+    this.broadcast({ type: "SESSION_STATUS", status: "ended", outcome: "aborted", reason });
+    this.onAbort(reason);
+  }
+
+  /** Stop everything and free the sidecar env. */
+  dispose(): Promise<void> {
+    // Repeat calls share the first call's promise, so callers can await the env close
+    if (this.disposing) return this.disposing;
     this.disposed = true;
     this.running = false;
     if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
     if (this.loopTimer) { clearTimeout(this.loopTimer); this.loopTimer = null; }
     this.log.write("room_disposed", { trialsCompleted: this.trialCount });
     this.log.close();
-    if (this.envId) await envClose(this.envId).catch(() => {});
+    const envId = this.envId;
+    this.disposing = envId ? envClose(envId).then(() => {}, () => {}) : Promise.resolve();
+    return this.disposing;
   }
 
   /** participantId → { agentId, connected }, for the data log. */

@@ -92,10 +92,15 @@ export type CoreServerEvent =
   //  new:     server has no seat for this participant
   //  resumed: seat restored; running/trialsCompleted let the client jump to the right screen
   //           (if running, a TRIAL_START for the current trial follows)
-  //  ended:   participant can't continue (seat expired after a long disconnect, or
-  //           the session was taken over by another tab); client should stop
+  //  ended:   participant can't continue; client should stop. outcome says why:
+  //             aborted  - the study ended early on our side (server shutdown,
+  //                        environment failure); participant should be paid
+  //             dropped  - they were disconnected longer than the grace period
+  //             replaced - the same participant opened the study in another tab
   | { type: "SESSION_STATUS"; status: "new" }
   | { type: "SESSION_STATUS"; status: "resumed"; roomId: RoomID; agentId: AgentID; running: boolean; trialsCompleted: number }
-  | { type: "SESSION_STATUS"; status: "ended"; reason: string };
+  | { type: "SESSION_STATUS"; status: "ended"; outcome: EndOutcome; reason: string };
+
+export type EndOutcome = "aborted" | "dropped" | "replaced";
 
 export type ServerEvent = CoreServerEvent | MpeServerEvent;

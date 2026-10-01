@@ -250,12 +250,96 @@ Session 2026-09-30 (cont.) — Reconnection + data logging (roadmap §3, §4)
       this machine's slow filesystem. The client changes are not yet checked
       in a browser.
 
+------------------------------------------------------------
+Session 2026-09-30 (cont.) — Ending the study early when the server fails
+------------------------------------------------------------
+
+[chore] Committed reconnection + data logging as df18237f on branch mpe.
+
+[design] Policy change: if the server can't continue, participants are sent to
+      the end of the study and paid, instead of being put into a new group.
+      (Replaces the previous "server restart → back to the waiting room"
+      behavior, which would have meant repeated rounds and data split across
+      runs.)
+
+[feature] SESSION_STATUS "ended" now carries an outcome:
+        aborted  - our failure; participant is paid
+        dropped  - participant disconnected longer than the grace period
+        replaced - study opened in another tab
+      Files: shared/types.ts, server/src/index.ts, server/src/game/roomManager.ts
+
+[feature] Room abort. When a room can't continue, MpeRoom.abort() ends the
+      study for the whole group (ended/aborted), logs room_aborted, and the
+      manager frees the room and remembers everyone as aborted, so a later
+      reconnect still lands on the end screen. Triggers:
+        - the sidecar was lost mid-trial (20 consecutive failed steps, ~2 s).
+          Previously only the trial ended and the group carried on with a
+          broken environment.
+        - the environment never became available (after MAX_START_RETRIES).
+          Previously the room just sent an ERROR and sat there.
+      START_RETRY_MS and MAX_START_RETRIES are now env vars (defaults 3000 / 40).
+      Files: server/src/game/mpeRoom.ts, server/src/game/roomManager.ts
+
+[feature] Graceful shutdown. On SIGINT/SIGTERM (Ctrl-C, deploy, process
+      manager), the server stops accepting connections, aborts every room
+      ("The study server was stopped."), sends ended/aborted to every
+      connected participant (including those not yet in a room), closes the
+      sockets, data logs and sidecar envs, then exits (forced after 5 s).
+      MpeRoom.dispose() now returns the same promise on repeat calls, so
+      shutdown really waits for env cleanup.
+      Files: server/src/index.ts, server/src/game/mpeRoom.ts, server/src/game/roomManager.ts
+
+[feature] Client-side detection, for when the server can't tell anyone (crash,
+      machine down). TrialEngine ends the study as aborted when:
+        - SESSION_STATUS "new" arrives while past the waiting room (the server
+          restarted and lost the group), or
+        - the server is unreachable for VITE_SERVER_LOST_TIMEOUT_MS (default
+          45 s, longer than the server's 30 s trial grace) on any screen from
+          the waiting room on.
+      The ending is saved in sessionStorage, so a refresh stays on the end
+      screen and can't re-enter a lobby ("replaced" is not saved, so
+      refreshing that tab takes the study back).
+      Files: client/src/components/engine/TrialEngine.tsx
+
+[feature] Early-end screen + completion links. New EarlyEnd screen:
+        aborted  → apology, "you will be paid", and a "Complete study" button
+                   to VITE_ABORTED_COMPLETION_URL
+        dropped  → "your session ended because…", with a button only if
+                   VITE_DROPPED_COMPLETION_URL is set
+        replaced → "continue in the other window"
+      If no URL is configured, it asks participants to contact the
+      researcher (and warns in the console). Settings live in
+      client/src/scripts/studyConfig.ts and are set per study in client/.env.
+      Use a different Prolific completion code from the normal one, so
+      early-ended submissions are easy to find.
+      Files: client/src/components/trials/EarlyEnd.tsx (new),
+             client/src/scripts/studyConfig.ts (new)
+
+[test] reconnect.js now checks outcomes (replaced, dropped); 29/29 pass, and
+      bots.js passes 24/24. Abort scenarios verified with a scratch script
+      against a live server (needs the sidecar/server to be killed, so not a
+      repo test):
+        env lost mid-trial → all 3 players ended/aborted in ~2 s; reconnect →
+          still aborted, not a new group
+        env never available (MAX_START_RETRIES=3) → all aborted, no trial
+        SIGTERM mid-trial → 3 in-room players + 1 not-yet-joined player all
+          ended/aborted and closed; log ends with room_aborted, room_disposed
+      Server and client typecheck clean. Not verified: client-side detection
+      and the EarlyEnd screen in a browser, and Ctrl-C through `npm run dev`
+      (ts-node-dev wrapper); SIGTERM was tested on a plain node process.
+
 KNOWN ISSUES (open)
+- Normal completion has no completion link yet: the final "debriefing"
+  display has no Prolific redirect (VITE_COMPLETION_URL not wired up).
+- A participant whose OWN connection is down for more than 30 s, then back,
+  gets "dropped" (no payment unless VITE_DROPPED_COMPLETION_URL is set). If
+  they never get back within 45 s, the client can't tell their outage from a
+  server outage and shows the paid "aborted" screen. Expect a few such cases.
+- On shutdown, players in a room get the ended message twice (from the room
+  and from the session sweep); harmless, the client keeps the first.
+- Participants still on pre-waiting-room screens (e.g. consent) when the
+  server shuts down also get the paid "aborted" screen.
 - Client "duration" in expTimeline ignored (roadmap §2).
-- If the server restarts mid-session, returning clients get status "new"
-  and go back to the waiting room. They'd form a new group and repeat rounds,
-  and the earlier rounds' data sits in the old run's log files. Fine for
-  development; for real sessions, you may prefer an "ended" screen instead.
 - Mid-trial dropouts (after grace) leave the agent idle for the rest of the
   trial and in later rounds; no dropout policy yet (roadmap step 7).
 - The client clock is used against the server's start timestamp for the
@@ -263,5 +347,5 @@ KNOWN ISSUES (open)
 - server/ and client/ each have both npm and yarn lockfiles; worth picking
   one package manager so they can't drift apart.
 - Root package.json "test" runs vitest, but no vitest tests remain.
-- Client changes (countdown timer, reconnect banner, resume) not yet checked
-  in a browser.
+- Client changes (countdown, reconnect banner, resume, early-end screen) not
+  yet checked in a browser.
