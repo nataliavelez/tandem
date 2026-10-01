@@ -52,6 +52,8 @@ export type TrialSpec = {
   seed: number;
   max_steps?: number;
   spec_hash: string;
+  /** Library versions in the sidecar (jax, jaxmarl, jaxmarl git commit) */
+  versions?: Record<string, string | null>;
 };
 
 // -------- Client -> Server --------
@@ -69,7 +71,11 @@ export type CoreClientEvent =
   | { type: "JOIN_ROOM"; roomId: RoomID; playerName?: string }  // explicit room join
   | { type: "PLAYER_WAITING"; playerId: PlayerID }
   | { type: "TRIAL_READY"; trialId: string; duration: number }
-  | { type: "SEND_CHAT"; message: string };
+  | { type: "SEND_CHAT"; message: string }
+  // Something the participant did outside the game (consent, screen changes,
+  // survey answers), for the participants data log. id is unique per entry; the
+  // server answers LOG_ACK so the client can resend anything not acknowledged.
+  | { type: "CLIENT_LOG"; id: string; event: string; clientTime: number; data?: Record<string, unknown> };
 
 export type ClientEvent = CoreClientEvent | MpeClientEvent;
 
@@ -88,6 +94,7 @@ export type CoreServerEvent =
   | { type: "BROADCAST_MESSAGE"; message: string; from?: string }
   | { type: "PLAYER_LEFT"; playerId: PlayerID }
   | { type: "ERROR"; message: string }
+  | { type: "LOG_ACK"; id: string }
   // Reply to HELLO.
   //  new:     server has no seat for this participant
   //  resumed: seat restored; running/trialsCompleted let the client jump to the right screen

@@ -39,7 +39,7 @@ def create(req: CreateReq):
 @app.post("/env/spec", response_model=SpecResp)
 def spec(req: IdReq):
     h = ensure_env(req.env_id)
-    return SpecResp(**env_spec(h.env, int(jax.random.key_data(h.key)[0])))
+    return SpecResp(**env_spec(h))
 
 @app.post("/env/reset")
 def reset(req: ResetReq):
@@ -51,7 +51,7 @@ def reset(req: ResetReq):
     return {
         "state": to_public_state(h.env, state, h.episode_label),
         "obs": {a: [float(x) for x in obs[a]] for a in h.env.agents},
-        "spec": env_spec(h.env, int(jax.random.key_data(h.key)[0]))
+        "spec": env_spec(h)
     }
 
 @app.post("/env/step")

@@ -15,12 +15,17 @@ Outputs:
 - TRIAL_READY: mark player ready in their room; room starts when all seats are ready
 - PLAYER_ACTION: forward to the player's room; the room applies it to the
   player's OWN agent (any agentId sent by the client is ignored)
+- CLIENT_LOG: write a browser-side event (consent, screen change, survey
+  answers, early end) to the participants log with the player's room/agent,
+  then LOG_ACK it. Repeats of an id (client resend) are acked, not rewritten.
 - CLOSE: hold the player's seat for a grace period (RoomManager.disconnect)
 - SIGINT/SIGTERM: end the study early for every participant (seated: aborted,
   paid per PAY_ABORTED; not yet seated: not paid), close the data logs and
   sidecar envs, then exit
 - Seated players also get ABORT_POLICY (paid? where to go?) in case the server
   later disappears without warning
+- Startup: asks the sidecar to compile the game once (warmSidecar), so the
+  first rooms don't stall each other while compiling
 
 Settings: see loadEnv.ts / studies/example.env.
 
@@ -31,23 +36,34 @@ import "./loadEnv"; // must be first: other modules read process.env on load
 import { WebSocketServer, WebSocket } from "ws";
 import type { ClientEvent, ServerEvent, PlayerID } from "../../shared/types";
 import { RoomManager } from "./game/roomManager";
-import { studyConfig, endInfo, unseatedEndInfo, checkStudyConfig } from "./studyConfig";
+import { warmSidecar, type MpeRoomOptions } from "./game/mpeRoom";
+import { DataLog } from "./game/dataLog";
+import { studyConfig, studyInfo, endInfo, unseatedEndInfo, checkStudyConfig } from "./studyConfig";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const PLAYERS_PER_ROOM = studyConfig.playersPerRoom;
-const SEED = Number(process.env.SEED ?? 123);
 const HORIZON = Number(process.env.HORIZON ?? 3000); // steps per trial
 
 const PARTICIPANT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const LOG_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const LOG_EVENT_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+const MAX_LOG_DATA_BYTES = 32_768;
 
 const wss = new WebSocketServer({ port: PORT });
 
-const rooms = new RoomManager(() => ({
-  seed: SEED,
+const roomOptions = (roomNum: number): MpeRoomOptions => ({
+  seed: studyConfig.seedFor(roomNum),
   num_agents: PLAYERS_PER_ROOM,
   num_landmarks: 3,
   horizon: HORIZON,
-}));
+});
+const rooms = new RoomManager(roomOptions);
+
+/** Participant-level events (not tied to a room): HELLOs and browser-side logs. */
+const participantsLog = new DataLog("participants");
+participantsLog.write("server_started", { study: studyInfo() });
+/** CLIENT_LOG ids already written, so a resend after a lost ack isn't logged twice. */
+const loggedIds = new Set<string>();
 
 /** The live socket for each participant (at most one). */
 const sessions = new Map<PlayerID, WebSocket>();
@@ -89,6 +105,8 @@ wss.on("connection", (ws) => {
       send(prev, { type: "SESSION_STATUS", status: "ended", ...endInfo("replaced", "This study was opened in another window.") });
       prev.close(4000, "replaced");
     }
+
+    participantsLog.write("participant_hello", { participantId: pid, meta, replacedOtherTab: !!(prev && prev !== ws) });
 
     const ended = rooms.endedStatus(pid);
     if (ended) {
@@ -169,6 +187,38 @@ wss.on("connection", (ws) => {
           rooms.roomOf(pid)?.receiveAction(pid, msg.action);
           return;
 
+        // Browser-side data (consent, screens, survey answers)
+        case "CLIENT_LOG": {
+          const { id, event, clientTime, data } = msg;
+          if (typeof id !== "string" || !LOG_ID_RE.test(id) ||
+              typeof event !== "string" || !LOG_EVENT_RE.test(event) ||
+              (data !== undefined && (data === null || typeof data !== "object" || Array.isArray(data)))) {
+            send(ws, { type: "ERROR", message: "Bad CLIENT_LOG" });
+            return;
+          }
+          const key = `${pid}:${id}`;
+          if (!loggedIds.has(key)) {
+            const dataJson = JSON.stringify(data ?? {});
+            if (dataJson.length > MAX_LOG_DATA_BYTES) {
+              send(ws, { type: "ERROR", message: `CLIENT_LOG data over ${MAX_LOG_DATA_BYTES} bytes` });
+              return;
+            }
+            const room = rooms.roomOf(pid);
+            participantsLog.write("client_event", {
+              participantId: pid,
+              name: event,
+              logId: id,
+              clientTime: typeof clientTime === "number" ? clientTime : null,
+              room: room?.id ?? null,
+              agentId: room?.agentFor(pid) ?? null,
+              data: data ?? {},
+            });
+            loggedIds.add(key);
+          }
+          send(ws, { type: "LOG_ACK", id });
+          return;
+        }
+
         // Screen coordination
         case "TRIAL_READY":
           await rooms.roomOf(pid)?.markReady(pid);
@@ -210,6 +260,8 @@ async function shutdown(signal: string) {
   const reason = "The study server was stopped.";
   const seated = rooms.seatedPlayers();
   await rooms.abortAll(reason);
+  participantsLog.write("server_stopped", { signal });
+  participantsLog.close();
   for (const [pid, ws] of sessions) {
     if (!seated.has(pid)) send(ws, { type: "SESSION_STATUS", status: "ended", ...unseatedEndInfo(reason) });
     ws.close(1001, "server shutting down"); // close handshake flushes queued messages
@@ -222,4 +274,20 @@ process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
 checkStudyConfig();
+
+// Compile the game in the sidecar now, not when the first room opens. Retries
+// while the sidecar is still starting; rooms work without it, just slower to open.
+void (async () => {
+  for (let attempt = 1; attempt <= 20; attempt++) {
+    try {
+      const t = Date.now();
+      await warmSidecar(roomOptions(1));
+      console.log(`[orchestrator] sidecar warmed up in ${Date.now() - t}ms`);
+      return;
+    } catch {
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+  console.warn("[orchestrator] could not warm up the sidecar; the first room will compile the game");
+})();
 console.log(`WS orchestrator listening on ws://127.0.0.1:${PORT} (${PLAYERS_PER_ROOM} players/room)`);

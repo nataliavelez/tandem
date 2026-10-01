@@ -35,7 +35,8 @@ export class RoomManager {
   private ended = new Map<PlayerID, EndInfo>();
   private nextRoomNum = 1;
 
-  constructor(private makeOptions: () => MpeRoomOptions) {}
+  /** makeOptions gets the room's number (room_1 → 1), e.g. to pick its seed. */
+  constructor(private makeOptions: (roomNum: number) => MpeRoomOptions) {}
 
   get roomCount() { return this.rooms.size; }
 
@@ -165,8 +166,9 @@ export class RoomManager {
   }
 
   private createRoom(): MpeRoom {
-    const id: RoomID = `room_${this.nextRoomNum++}`;
-    const room: MpeRoom = new MpeRoom(id, this.makeOptions(), (reason) => this.abortRoom(room, reason));
+    const num = this.nextRoomNum++;
+    const id: RoomID = `room_${num}`;
+    const room: MpeRoom = new MpeRoom(id, this.makeOptions(num), (reason) => this.abortRoom(room, reason));
     this.rooms.set(id, room);
     console.log(`[rooms] created ${id} (data: ${room.log.filePath})`);
     return room;

@@ -20,10 +20,13 @@ Ending early (EarlyEnd screen; saved in sessionStorage so a refresh stays there)
   ABORT_POLICY the server sent when the participant was seated (none saved =
   never seated = not paid).
 
+Data (DataLogger → server participants log): screen_enter each time a screen
+is shown (incl. after a refresh), and early_end when the study ends early.
+
 Edited by: Elizabeth Mieczkowski, Updated: 09/2026
 */}
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { TrialTimeline, TrialConfig } from "client-types";
 import type { EndInfo } from "shared/types";
 import type { SessionStatus } from "../../context/socketContext";
@@ -35,6 +38,7 @@ import { MpeTrial } from "../trials/MpeTrial";
 import { EarlyEnd } from "../trials/EarlyEnd";
 import { studyConfig } from "../../scripts/studyConfig";
 import { loadAbortPolicy } from "../../context/abortPolicy";
+import { logEvent } from "./DataLogger";
 // import { PostTest } from "./PostTest";
 
 type Props = {
@@ -98,6 +102,23 @@ export function TrialEngine({ timeline }: Props) {
   useEffect(() => {
     try { sessionStorage.setItem(INDEX_KEY, String(currentIndex)); } catch { /* ignore */ }
   }, [currentIndex]);
+
+  // Refs survive StrictMode's double effect, so each screen is logged once per page load
+  const loggedIndex = useRef(-1);
+  useEffect(() => {
+    if (earlyEnd || loggedIndex.current === currentIndex) return;
+    loggedIndex.current = currentIndex;
+    logEvent("screen_enter", { index: currentIndex, screenId: currentTrial.id, screenType: currentTrial.type });
+  }, [currentIndex, currentTrial, earlyEnd]);
+
+  // An early end restored from sessionStorage was already logged before the refresh
+  const loggedEarlyEnd = useRef(earlyEnd !== null);
+  useEffect(() => {
+    if (!earlyEnd || loggedEarlyEnd.current) return;
+    loggedEarlyEnd.current = true;
+    const { outcome, reason, paid } = earlyEnd;
+    logEvent("early_end", { outcome, reason, paid, screenId: currentTrial.id });
+  }, [earlyEnd, currentTrial]);
 
   const endEarly = useCallback((state: EndInfo) => {
     setEarlyEnd((prev) => prev ?? state); // first reason wins

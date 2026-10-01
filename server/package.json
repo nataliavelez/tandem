@@ -8,7 +8,8 @@
     "test:bots": "node test/bots.js",
     "test:reconnect": "node test/reconnect.js",
     "test:groupsize": "node test/groupsize.js",
-    "test:all": "node test/bots.js && node test/reconnect.js && node test/groupsize.js"
+    "test:datalog": "node test/datalog.js",
+    "test:all": "node test/bots.js && node test/reconnect.js && node test/groupsize.js && node test/datalog.js"
   },
   "keywords": [],
   "author": "",

@@ -4,7 +4,7 @@ Running log of every bug fix and feature change. Newest session at the bottom.
 Format: [type] area — what changed (why). Files touched.
 
 ------------------------------------------------------------
-Session 2026-09-30 — Multiplayer backend fixes (roadmap §1)
+Session 2026-09-30 — Multiplayer backend fixes 
 ------------------------------------------------------------
 
 [bug] Security — A client could control ANY agent: the server trusted the agentId
@@ -105,10 +105,8 @@ KNOWN ISSUES (found this session; see resolutions below)
   roadmap §3).
 
 ------------------------------------------------------------
-Session 2026-09-30 (cont.) — Housekeeping + known-issue fixes
+Session 2026-09-30 (cont.) 
 ------------------------------------------------------------
-
-[chore] Committed backend fixes as bed2da8d on branch mpe.
 
 [test] Bot integration test added to the repo: server/test/bots.js, run with
       `npm run test:bots` in server/ (server started with PORT=8090
@@ -157,10 +155,8 @@ Session 2026-09-30 (cont.) — Housekeeping + known-issue fixes
       Files: client/src/components/engine/TrialEngine.tsx
 
 ------------------------------------------------------------
-Session 2026-09-30 (cont.) — Reconnection + data logging (roadmap §3, §4)
+Session 2026-09-30 (cont.)
 ------------------------------------------------------------
-
-[chore] Committed housekeeping as 5c59505f on branch mpe.
 
 [feature] Stable participant identity. The client reads the participant ID
       from the URL (PROLIFIC_PID, participantId or pid), or generates
@@ -412,24 +408,8 @@ Session 2026-10-01 — Per-study payment settings + minimum group size
              server/test/bots.js, server/test/reconnect.js, server/package.json
 
 ------------------------------------------------------------
-Session 2026-10-01 (cont.) — Moved the repo off the Desktop
+Session 2026-10-01 (cont.) 
 ------------------------------------------------------------
-
-[chore] Moved the working copy from ~/Desktop/colab-tandem to
-      ~/Code/colab-tandem. Every Node command in the Desktop folder was
-      disk-bound (≈1–3% CPU): the server took minutes to start, typechecks
-      ~4 min, ESLint never finished, and `npm run dev` looked hung in the
-      browser walkthrough. In the new folder: typecheck ~1.3 s, server and
-      sidecar up in ~3 s, client served in ~1 s, npm installs ~2 s.
-      How: git clone of the Desktop repo (all local branches kept: mpe 5 ahead
-      of origin, jaxmarl 1 ahead, main as before), origin re-pointed to
-      github.com/nataliavelez/colab-tandem, fresh `npm ci` in root/server/client,
-      client/.env copied, jaxmarl re-cloned from GitHub at the same commit
-      (0df1722), and the conda env's editable jaxmarl install re-pointed to
-      the new folder (pip install --no-deps -e jaxmarl). The Desktop copy is
-      left in place for now (no longer used by the conda env).
-      Verified in the new folder: sidecar tests 7/7, bots 24/24, reconnect
-      29/29, groupsize 7/7, server and client typecheck clean.
 
 KNOWN ISSUES (open)
 - Client changes (countdown, reconnect banner, resume, early-end screen,
@@ -447,3 +427,107 @@ KNOWN ISSUES (open)
   already drifted: `npm ci` rewrites client/yarn.lock (~1,360 lines) to match
   package-lock.json (reverted for now). Worth picking one package manager.
 - Root package.json "test" runs vitest, but no vitest tests remain.
+
+------------------------------------------------------------
+Session 2026-10-01 (cont.) — Fix room-creation freeze + data saving fixes
+------------------------------------------------------------
+
+[bug] Sidecar — Opening a room froze games already running (steps up to
+      643 ms instead of ~30 ms) because every env re-JITted reset/step
+      (0.5–2 s per env): JAX caches compilations per function object, and each
+      env's bound methods are new objects. The env + jitted reset/step are now
+      cached per config (task, agents, landmarks, local_ratio, horizon) and
+      shared by every env with that config; envs keep no episode state, so
+      sharing is safe. A lock makes simultaneous first creates compile once.
+      Re-measured (8 rooms stepping at 10 Hz, 3 bursts of 4 creates): creates
+      take 0.01–0.02 s, step latency max 36 ms during bursts.
+      Files: sidecar/env_registry.py
+
+[feature] Server warms the sidecar at startup (create + close one env with the
+      study's config, retrying for ~1 min while the sidecar starts), so even the
+      first room doesn't compile. Logged: "sidecar warmed up in N ms".
+      Files: server/src/game/mpeRoom.ts (warmSidecar), server/src/index.ts
+
+[bug] Data — spec.seed was always 0 (it logged key_data(key)[0], which is 0 for
+      every PRNGKey). The sidecar now reports the seed the env was created with.
+      spec_hash no longer includes the seed, so it identifies the game config
+      (same game = same hash, whatever the seed). Old pilot logs have seed 0 and
+      a hash computed with seed=0.
+      Files: sidecar/env_registry.py, sidecar/app.py, sidecar/schemas.py
+
+[feature] Data — each episode's starting state (step 0) is logged as
+      trial_start.initialState (agents, landmarks, step, episodeId). Before,
+      the reset responses were discarded and the log began at step 1.
+      Files: server/src/game/mpeRoom.ts
+
+[bug] If the reset after a trial failed, the next trial started at the old
+      episode's end and stopped at once. The room now remembers whether it has
+      a fresh reset, and tryStart() resets again (retrying like any sidecar
+      outage) before starting.
+      Files: server/src/game/mpeRoom.ts
+
+[feature] Data — study and code info in every log: room_created.study (and
+      participants-log server_started.study) = { studyName, condition,
+      configFile, code: { commit, dirty }, seed, seedPerRoom, playersPerRoom,
+      minGroupSize, paid }. New settings STUDY_NAME and CONDITION (one settings
+      file per condition); startup warns if they are unset or the code has
+      uncommitted changes. CODE_VERSION overrides git for deployments without
+      .git. The spec also records sidecar versions (jax, jaxmarl, jaxmarl git
+      commit).
+      Files: server/src/studyConfig.ts, server/src/game/mpeRoom.ts,
+             server/studies/example.env, server/test/test.env, shared/types.ts
+
+[feature] Seeds made a deliberate setting: SEED (default 123), same for every
+      room by default (all groups play the same sequence of starting layouts);
+      SEED_PER_ROOM=true gives room_k seed SEED + k - 1.
+      Files: server/src/studyConfig.ts, server/src/game/roomManager.ts
+             (makeOptions now gets the room number), server/src/index.ts
+
+[bug] Data — isHuman was always true (the sidecar's placeholder). The server now
+      sets it per agent: true iff a participant holds that seat (a dropped
+      player's agent becomes false). Applies to STATE_UPDATE, ticks, and
+      initialState.
+      Files: server/src/game/mpeRoom.ts
+
+[feature] Browser-side data. New CLIENT_LOG { id, event, clientTime, data }
+      message → written to a new per-run participants log
+      (<run>_participants.jsonl) with participantId, room and agent (if
+      seated), then LOG_ACK { id }. Client DataLogger.ts (was empty):
+      logEvent(event, data) keeps entries in sessionStorage until acknowledged
+      and resends them after every HELLO, so they survive refreshes and drops;
+      the server ignores repeats of an id. Validation: id/event name
+      [A-Za-z0-9_.-] ≤64 chars, data a JSON object ≤32 KB.
+      Logged now: consent (Continue on the consent screen), screen_enter (every
+      timeline screen, incl. after a refresh: gives instruction/quiz timings),
+      early_end (outcome, reason, paid). The participants log also has
+      server_started, participant_hello (with Prolific meta) and server_stopped.
+      DataLog generalized (name + base fields) to serve both log types.
+      Files: shared/types.ts, server/src/index.ts, server/src/game/dataLog.ts,
+             client/src/components/engine/DataLogger.ts,
+             client/src/context/SocketProvider.tsx,
+             client/src/components/engine/TrialEngine.tsx,
+             client/src/components/trials/Consent.tsx
+
+[test] Sidecar: 3 new tests (second env of a config created in <0.3 s; spec
+      reports requested seed, same hash across seeds, max_steps, versions;
+      envs sharing compiled fns keep separate state). test_sidecar.py honors
+      SIDECAR_URL. 10/10 pass.
+      New server/test/datalog.js (npm run test:datalog, added to test:all):
+      CLIENT_LOG ack + resend dedupe + rejection of bad id/name/oversized
+      data; study info + git commit in room_created; spec.seed = 123; versions;
+      step-0 initialState for both episodes (e_0001, e_0002, different starts);
+      first tick follows it; isHuman; participants log (server_started, hellos,
+      consent once with no room, seated event with room/agent). 21/21 pass.
+      test:all: bots 24/24, reconnect 29/29, groupsize 7/7, datalog 21/21 (run
+      twice). SEED_PER_ROOM=true checked by hand on a second server (room_1
+      seed 123, room_2 seed 124). Server and client typecheck clean; ESLint
+      clean on changed client files. Not checked in a browser: the consent /
+      screen_enter / early_end logging (the protocol is covered headlessly).
+
+KNOWN ISSUES (open, additions)
+- No off-server backup of server/data yet (depends on where it is deployed).
+- No exporter from the JSONL logs to the MARL/LLM rollout format.
+- The client timeline's "condition" field (expTimeline.ts) is unused; the
+  condition now comes from the server's CONDITION setting.
+- A brand-new config (e.g. a different HORIZON) still compiles once on first
+  use; startup warm-up covers only the study's own config.

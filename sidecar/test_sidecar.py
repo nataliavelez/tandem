@@ -4,7 +4,8 @@ Created by: Elizabeth Mieczkowski, Updated: 09/2025
 
 import requests, math
 
-BASE = "http://127.0.0.1:8001"
+import os
+BASE = os.environ.get("SIDECAR_URL", "http://127.0.0.1:8001")
 
 def create_env(seed=123, N=3, L=3, horizon=10):
     r = requests.post(f"{BASE}/env/create", json={
@@ -72,3 +73,29 @@ def test_close_frees_env():
     assert requests.post(f"{BASE}/env/close", json={"env_id": env}).status_code == 200
     gone = requests.post(f"{BASE}/env/spec", json={"env_id": env})
     assert gone.status_code == 404
+
+def test_same_config_reuses_compiled_env():
+    # The first env of a config compiles; later ones must not (that stalled live rooms)
+    import time
+    create_env(N=3, L=3, horizon=17)
+    t = time.time()
+    create_env(N=3, L=3, horizon=17)
+    assert time.time() - t < 0.3
+
+def test_spec_reports_requested_seed_and_versions():
+    a = requests.post(f"{BASE}/env/spec", json={"env_id": create_env(seed=123)}).json()
+    b = requests.post(f"{BASE}/env/spec", json={"env_id": create_env(seed=456)}).json()
+    assert a["seed"] == 123 and b["seed"] == 456
+    assert a["spec_hash"] == b["spec_hash"]  # same game, different seed
+    assert a["max_steps"] == 10
+    assert a["versions"]["jax"] and a["versions"]["jaxmarl"]
+
+def test_shared_compiled_env_keeps_episodes_separate():
+    # Two envs with the same config share compiled fns but not state
+    e1, e2 = create_env(seed=1), create_env(seed=2)
+    r1 = requests.post(f"{BASE}/env/reset", json={"env_id": e1}).json()
+    r2 = requests.post(f"{BASE}/env/reset", json={"env_id": e2}).json()
+    assert r1["state"]["agents"]["agent_0"]["pos"] != r2["state"]["agents"]["agent_0"]["pos"]
+    requests.post(f"{BASE}/env/step", json={"env_id": e1, "actions": {"agent_0": 1, "agent_1": 1, "agent_2": 1}})
+    s2 = requests.post(f"{BASE}/env/state", json={"env_id": e2}).json()
+    assert s2["state"]["step"] == 0

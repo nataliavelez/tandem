@@ -9,6 +9,8 @@ Owns the WebSocket and caches key assignments/start info.
   later can read them from context.
 - Saves ABORT_POLICY (sent once seated) to sessionStorage, so the client knows
   how to end the study even if the server later disappears (see TrialEngine).
+- Connects DataLogger: after each HELLO it (re)sends unacknowledged CLIENT_LOG
+  entries; LOG_ACK marks them saved.
 
 The socket is a module-level singleton so React StrictMode's mount → unmount →
 mount in development reuses one socket instead of opening two.
@@ -20,6 +22,7 @@ import React, { useEffect, useState, useCallback, useRef } from "react";
 import { SocketContext, type ActiveTrial, type SessionStatus } from "./socketContext";
 import { getParticipantId, getRecruitmentMeta } from "./participant";
 import { saveAbortPolicy } from "./abortPolicy";
+import { attachLogSender, ackLog } from "../components/engine/DataLogger";
 import type { ServerEvent, TrialSpec, AgentID, ClientEvent } from "shared/types";
 
 const WS_URL = import.meta.env.VITE_SERVER_URL ?? "ws://127.0.0.1:8080";
@@ -62,6 +65,8 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setConnected(true);
       const hello: ClientEvent = { type: "HELLO", participantId, meta };
       ws?.send(JSON.stringify(hello));
+      const s = ws;
+      attachLogSender((m) => { if (s?.readyState === WebSocket.OPEN) s.send(JSON.stringify(m)); });
     };
 
     const onMessage = (event: MessageEvent) => {
@@ -76,6 +81,7 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setActiveTrial({ startTimestamp: msg.startTimestamp, duration: msg.duration, spec: msg.spec });
       }
       else if (msg.type === "TRIAL_END") setActiveTrial(null);
+      else if (msg.type === "LOG_ACK") ackLog(msg.id);
       else if (msg.type === "ABORT_POLICY") saveAbortPolicy({ paid: msg.paid, completionUrl: msg.completionUrl });
       else if (msg.type === "SESSION_STATUS") {
         setSessionStatus(msg);
@@ -93,6 +99,7 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     const onClose = () => {
       setConnected(false);
+      attachLogSender(null);
       if (ws) detach(ws);
       if (disposed || sessionEnded) return;
       const delay = RECONNECT_DELAYS_MS[attempt] ?? RECONNECT_MAX_MS;
@@ -130,6 +137,7 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     return () => {
       disposed = true;
+      attachLogSender(null);
       if (retryTimer) clearTimeout(retryTimer);
       if (ws) detach(ws);
     };

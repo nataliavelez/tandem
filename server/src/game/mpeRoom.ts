@@ -9,7 +9,9 @@ MPE game lifecycle and sidecar interaction for ONE room (one group of players).
 - Resets the env after each trial so the next round starts from step 0.
 - Holds a disconnected player's seat (markDisconnected) so they can come back
   (reattach); the RoomManager decides how long to hold it.
-- Writes every event and tick to a per-room JSONL data log (DataLog).
+- Writes every event and tick to a per-room JSONL data log (DataLog),
+  including each episode's starting state (trial_start.initialState) and
+  the study/code info (room_created.study).
 - abort(): if the room can't continue (environment never starts or is lost
   mid-trial, the group fell below MIN_GROUP_SIZE, or the server is shutting
   down), ends the study for the whole group with SESSION_STATUS ended/aborted;
@@ -19,7 +21,7 @@ Created by: Elizabeth Mieczkowski, Updated: 09/2026
 */}
 import { envCreate, envSpec, envReset, envStep, envClose } from "./sidecarClient";
 import { DataLog } from "./dataLog";
-import { endInfo } from "../studyConfig";
+import { endInfo, studyInfo } from "../studyConfig";
 import type {
   PublicState,
   TrialSpec,
@@ -56,6 +58,29 @@ const DISCONNECTED_SEND = () => {};
 
 type TrialStartMsg = Extract<ServerEvent, { type: "TRIAL_START" }>;
 
+/** Env state as the sidecar returns it (agents, landmarks, step, episodeId). */
+type SidecarState = Omit<RunningState, "phase">;
+
+function createParams(options: MpeRoomOptions) {
+  return {
+    task: "simple_spread" as const,
+    seed: options.seed,
+    num_agents: options.num_agents,
+    num_landmarks: options.num_landmarks,
+    episode_horizon: options.horizon,
+    action_type: "DISCRETE_ACT" as const,
+  };
+}
+
+/**
+ * Have the sidecar compile this game config before anyone arrives (it compiles
+ * once per config; doing it mid-study would stall rooms already playing).
+ */
+export async function warmSidecar(options: MpeRoomOptions) {
+  const { env_id } = await envCreate(createParams(options));
+  await envClose(env_id);
+}
+
 export class MpeRoom {
   readonly id: RoomID;
   readonly options: MpeRoomOptions;
@@ -80,6 +105,8 @@ export class MpeRoom {
   private starting = false;
   private startRetries = 0;
   private retryTimer: NodeJS.Timeout | null = null;
+  /** State after the latest reset: where the next trial starts (step 0). */
+  private resetState: SidecarState | null = null;
   /** The current trial's TRIAL_START, re-sent to players who reconnect mid-trial. */
   private currentTrialStart: TrialStartMsg | null = null;
 
@@ -93,8 +120,8 @@ export class MpeRoom {
   ) {
     this.id = id;
     this.options = options;
-    this.log = new DataLog(id);
-    this.log.write("room_created", { options, tickMs: TICK_MS });
+    this.log = new DataLog(id, { room: id });
+    this.log.write("room_created", { options, tickMs: TICK_MS, study: studyInfo() });
     // Start creating the env right away; if it fails, tryStart() retries later
     this.ensureReady().catch((e) => console.error(`[room ${id}] init failed:`, e?.message ?? e));
   }
@@ -221,17 +248,10 @@ export class MpeRoom {
   private async init() {
     let envId: string | null = null;
     try {
-      const create = await envCreate({
-        task: "simple_spread",
-        seed: this.options.seed,
-        num_agents: this.options.num_agents,
-        num_landmarks: this.options.num_landmarks,
-        episode_horizon: this.options.horizon,
-        action_type: "DISCRETE_ACT",
-      });
+      const create = await envCreate(createParams(this.options));
       envId = create.env_id as string;
       const spec = await envSpec(envId);
-      await envReset(envId);
+      this.resetState = (await envReset(envId)).state;
       this.envId = envId;
       this.spec = spec;
     } catch (e) {
@@ -253,6 +273,9 @@ export class MpeRoom {
     this.starting = true;
     try {
       await this.ensureReady();
+      // The reset after the last trial failed: without one, this trial would
+      // start at the old episode's end and stop at once
+      if (!this.resetState && this.envId) this.resetState = (await envReset(this.envId)).state;
     } catch (e: any) {
       this.starting = false;
       this.startRetries++;
@@ -296,7 +319,10 @@ export class MpeRoom {
       duration: startMsg.duration,
       spec: this.spec,
       players: this.seatSummary(),
+      // Step 0 of this episode (ticks log the state after each step)
+      initialState: this.resetState ? { ...this.resetState, agents: this.withHumans(this.resetState.agents) } : null,
     });
+    this.resetState = null; // used up; the next trial needs a fresh reset
     this.broadcast(startMsg);
 
     this.scheduleTick(Date.now());
@@ -331,7 +357,7 @@ export class MpeRoom {
 
       const running: RunningState = {
         phase: "running",
-        agents: stepResp.state.agents as RunningState["agents"],
+        agents: this.withHumans(stepResp.state.agents),
         landmarks: stepResp.state.landmarks as RunningState["landmarks"],
         step: stepResp.state.step,
         episodeId: stepResp.state.episodeId,
@@ -406,7 +432,7 @@ export class MpeRoom {
 
     // Reset now so the next round starts at step 0 (otherwise it ends immediately)
     if (this.envId && !this.disposed) {
-      try { await envReset(this.envId); }
+      try { this.resetState = (await envReset(this.envId)).state; }
       catch (e) { console.error(`[room ${this.id}] reset after trial failed:`, e); }
     }
     this.broadcastLobbyState();
@@ -441,6 +467,16 @@ export class MpeRoom {
     const envId = this.envId;
     this.disposing = envId ? envClose(envId).then(() => {}, () => {}) : Promise.resolve();
     return this.disposing;
+  }
+
+  /** Mark each agent human-controlled iff a participant holds its seat. */
+  private withHumans(agents: RunningState["agents"]): RunningState["agents"] {
+    const seated = new Set([...this.seats.values()].map((s) => s.agentId));
+    const out = {} as RunningState["agents"];
+    for (const [aid, a] of Object.entries(agents) as [AgentID, RunningState["agents"][AgentID]][]) {
+      out[aid] = { ...a, isHuman: seated.has(aid) };
+    }
+    return out;
   }
 
   /** participantId → { agentId, connected }, for the data log. */

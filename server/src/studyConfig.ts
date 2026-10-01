@@ -1,6 +1,6 @@
 {/*
-Per-study settings that decide group size limits and who gets paid when the
-study ends early. Values come from the study's settings file (see loadEnv.ts
+Per-study settings: what the study and condition are called, how seeds are
+assigned, group size limits, and who gets paid when the study ends early. Values come from the study's settings file (see loadEnv.ts
 and studies/example.env).
 
 Payment rules (each can be changed per study):
@@ -18,6 +18,8 @@ review.
 
 Created by: Elizabeth Mieczkowski, Updated: 10/2026
 */}
+import { execFileSync } from "child_process";
+import path from "path";
 import type { EndInfo, EndOutcome } from "../../shared/types";
 
 function envBool(name: string, fallback: boolean): boolean {
@@ -31,8 +33,38 @@ function envUrl(name: string): string | null {
 }
 
 const playersPerRoom = Number(process.env.REQUIRED_PLAYERS ?? 2);
+const seed = Number(process.env.SEED ?? 123);
+const seedPerRoom = envBool("SEED_PER_ROOM", false);
+
+/** The commit this server runs, and whether it had uncommitted changes. */
+function codeVersion(): { commit: string | null; dirty: boolean | null } {
+  // Deployments without .git can set CODE_VERSION instead
+  if (process.env.CODE_VERSION) return { commit: process.env.CODE_VERSION, dirty: null };
+  const repo = path.resolve(__dirname, "../..");
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  try {
+    // The data dir is gitignored, so live logs don't mark the tree dirty
+    return { commit: git("rev-parse", "HEAD"), dirty: git("status", "--porcelain").length > 0 };
+  } catch {
+    return { commit: null, dirty: null };
+  }
+}
 
 export const studyConfig = {
+  /** Recorded in every data log, so files can be matched to their study/condition. */
+  studyName: process.env.STUDY_NAME?.trim() || null,
+  condition: process.env.CONDITION?.trim() || null,
+  configFile: process.env.STUDY_CONFIG ?? null,
+  code: codeVersion(),
+  /**
+   * Environment seed for a room. Default: every room uses SEED, so every group
+   * plays the same sequence of starting layouts. SEED_PER_ROOM=true gives
+   * room_k seed SEED + k - 1 instead.
+   */
+  seedFor: (roomNum: number) => (seedPerRoom ? seed + roomNum - 1 : seed),
+  seed,
+  seedPerRoom,
   playersPerRoom,
   /**
    * Once a group has started, if drop-outs leave fewer than this many players,
@@ -45,6 +77,15 @@ export const studyConfig = {
     dropped: { paid: envBool("PAY_DROPPED", false), completionUrl: envUrl("DROPPED_COMPLETION_URL") },
   },
 };
+
+/** What a data log records about the study this server is running. */
+export function studyInfo() {
+  const { studyName, condition, configFile, code, seed, seedPerRoom, playersPerRoom, minGroupSize, payment } = studyConfig;
+  return {
+    studyName, condition, configFile, code, seed, seedPerRoom, playersPerRoom, minGroupSize,
+    paid: { aborted: payment.aborted.paid, dropped: payment.dropped.paid },
+  };
+}
 
 /** The EndInfo sent to a seated participant whose study ended early. */
 export function endInfo(outcome: EndOutcome, reason: string): EndInfo {
@@ -66,6 +107,12 @@ export function checkStudyConfig() {
         `${outcome.toUpperCase()}_COMPLETION_URL is not set; they won't be sent anywhere to complete.`);
     }
   }
+  if (!studyConfig.studyName || !studyConfig.condition) {
+    console.warn("[config] STUDY_NAME and/or CONDITION not set; data logs won't say which study/condition they belong to.");
+  }
+  if (studyConfig.code.dirty) console.warn("[config] running with uncommitted code changes (logged as code.dirty=true).");
+  console.log(`[config] study ${studyConfig.studyName ?? "(unnamed)"} / condition ${studyConfig.condition ?? "(none)"}; ` +
+    `seed ${seed}${seedPerRoom ? " + room number" : " (same for every room)"}`);
   console.log(`[config] group size ${playersPerRoom} (abort below ${minGroupSize}); ` +
     `pay aborted=${payment.aborted.paid}, dropped=${payment.dropped.paid}`);
 }

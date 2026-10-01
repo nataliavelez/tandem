@@ -40,7 +40,9 @@ class SpecResp(BaseModel):
     action_space: ActionSpace
     dt: float
     seed: int
+    max_steps: int
     spec_hash: str
+    versions: Dict[str, Optional[str]] = {}
 
 class StateResp(BaseModel):
     state: Dict
