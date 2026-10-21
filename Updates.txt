@@ -745,3 +745,172 @@ KNOWN ISSUES (open, additions)
   its own timeline text.
 - Screens other than the game are left-aligned (no global centering), as before.
 - The countdown still uses the client clock against the server's start time.
+
+------------------------------------------------------------
+Session 2026-10-21 (cont.) — Read-only admin view
+------------------------------------------------------------
+
+[feature] Admin view: a live, read-only page at /admin on the game server's
+      port (the server now runs an HTTP server that also carries the game's
+      WebSocket). Off unless ADMIN_TOKEN is set; GET /admin serves the page
+      (no data in it), GET /admin/state returns everything as JSON and needs
+      "Authorization: Bearer <token>" (constant-time check; 401 otherwise;
+      non-GET → 405). The page asks for the token once per tab (or #token=...)
+      and refreshes every 2 s. Shows:
+        - study settings (name, condition, game/layout, group size, horizon,
+          tick, seed, code commit/dirty)
+        - health: sidecar (reachable, latency, live envs), backup (on/off,
+          last upload, failures), uptime, memory
+        - participants by stage: before lobby / lobby / playing / after a
+          round / ended (outcome), and how many are connected
+        - rooms: status (lobby, starting, playing, between rounds), seats
+          (cook number, participant, connected, ready, seconds left on a held
+          seat), round, step progress, elapsed time, score, step latency and
+          tick overruns, sidecar retries/failures
+        - participants: stage, room, cook, last screen (from screen_enter),
+          last seen, how they ended and whether paid
+        - recent log events (no ticks), newest first
+      Completion URLs are never included. Built so actions can be added later
+      as POST routes.
+      Files: server/src/admin.ts (new), server/src/admin.html (new),
+             server/src/index.ts, server/src/game/gameRoom.ts (snapshot, step
+             stats), server/src/game/roomManager.ts (snapshot, held-seat
+             deadlines), server/src/game/dataLog.ts (onLogEvent),
+             server/src/backup.ts (status), server/src/game/sidecarClient.ts
+             (sidecarHealth), server/studies/example.env (ADMIN_TOKEN)
+
+[feature] Sidecar GET /health: { ok, envs (live envs), compiled_configs }.
+      Files: sidecar/app.py
+
+[bug] A trial could skip an episode and, depending on timing, log the wrong
+      initialState. After a trial the room resets the env in the background;
+      if players were ready again before that reset returned, the start logic
+      saw no fresh reset and requested a second one (seen in a test run: trial
+      2 started at e_0003). Whichever reply came last became initialState, so
+      it could differ from the episode actually played. The next trial now
+      waits for the in-flight reset instead. This was behind datalog.js's
+      intermittent "initialState matches each episode" failure (1 in 3 full
+      runs before; 0 in 3 full runs + 6 datalog runs after; all 33 trials in
+      that server run's logs have consecutive episodes matching their ticks).
+      Files: server/src/game/gameRoom.ts
+
+[bug] Sidecar tests left every env they created open (~37 per run), which
+      would leak memory if run against a study's live sidecar. They now close
+      them when done (live env count back to 0 after the run).
+      Files: sidecar/test_sidecar.py, sidecar/test_overcooked.py
+
+[test] New server/test/admin.js (npm run test:admin; own server on :8096;
+      added to test:all), 27 checks: off without ADMIN_TOKEN; 401 without /
+      with a wrong token; page served; 405 on POST; settings, sidecar and
+      backup status; stages before lobby → lobby → playing → after a round,
+      and ended: dropped (not paid); last screen; room status, seats, step
+      progress, score, step timing; held-seat countdown after a disconnect;
+      recent events without ticks; no completion URLs. ALL PASSED.
+      test:all (bots, reconnect, groupsize, datalog, overcooked, admin) passed
+      3 times in a row; sidecar 19/19. Page checked in headless Chrome with a
+      playing room (one seat held), a lobby, and participants before the
+      lobby, in light and dark mode; wrong token shows "Wrong token."
+
+KNOWN ISSUES (open, additions)
+- A sidecar started before this change has no /health; the admin view then
+  shows "sidecar DOWN" until it is restarted.
+- The participant list keeps everyone seen since the server started (memory
+  grows with the number of participants; fine for hundreds).
+
+------------------------------------------------------------
+Session 2026-10-21 (cont.) — Completion link, finished groups, deployment kit
+------------------------------------------------------------
+
+[bug] After the last round, participants who finished and closed the tab
+      (e.g. to go to Prolific) were treated as disconnects: after
+      TRIAL_GRACE_MS they were "dropped" (not paid), and that could push the
+      group below MIN_GROUP_SIZE and abort everyone still on the debrief.
+      Server shutdown also aborted such groups, and a finisher coming back
+      after their room closed got status "new", which the client turns into
+      an early ending. Fixed by the finished state below.
+      Files: server/src/game/gameRoom.ts, server/src/game/roomManager.ts,
+             server/src/index.ts
+
+[feature] ROUNDS setting (default 1): a group plays ROUNDS rounds; after the
+      last one the room is finished (no further rounds start; logged as
+      room_finished with the players). Everyone holding a seat at that moment
+      (connected or not) is finished: leaving no longer counts as dropping out
+      (player_finished, seat freed at once), a finished room never aborts for
+      being too small, shutdown leaves it alone, finishers can't join a new
+      lobby, and a returning finisher gets SESSION_STATUS finished
+      {roundsCompleted}. The client then moves past the last game screen.
+      Files: server/src/studyConfig.ts, server/src/game/gameRoom.ts,
+             server/src/game/roomManager.ts, server/src/index.ts, shared/types.ts,
+             client/src/components/engine/TrialEngine.tsx
+
+[feature] Completion link for participants who finish: new final timeline
+      screen "completion" (Completion.tsx) sends STUDY_COMPLETE; the server
+      answers COMPLETION with COMPLETION_URL only if it saw the participant
+      finish every round (else null + reason: "contact the researcher").
+      Logged as study_completed (once per participant) or completion_refused;
+      the client logs completion_shown. The URL is kept in sessionStorage
+      (survives a refresh or the server going away) and the page redirects
+      after 10 s or on the button. The client's server-unreachable early
+      ending now applies only from the waiting room through the last game
+      screen. Admin view: stages "finished game" / "completed", rooms show
+      "round k of N" and status finished. Startup warns if COMPLETION_URL is
+      unset.
+      Files: client/src/components/trials/Completion.tsx (new),
+             client/src/context/completion.ts (new), client/types.ts,
+             client/src/scripts/expTimeline.ts, server/src/admin.ts,
+             server/src/admin.html, server/studies/example.env
+
+[feature] HOST setting: interface the game server listens on (unset = all,
+      as before; the deployment uses 127.0.0.1 behind HTTPS).
+      Files: server/src/index.ts, server/studies/example.env
+
+[feature] Deployment kit for one Ubuntu 24.04 droplet (deploy/):
+        setup.sh   first-time setup, re-runnable: Node (NodeSource), Python
+                   3.10 via uv, Caddy; "tandem" system user; clones the repo
+                   (private repos: makes a read-only deploy key and stops until
+                   it's added) and JaxMARL at the pinned commit; installs
+                   sidecar/requirements-lock.txt (exact versions from the
+                   working environment) and jaxmarl --no-deps; builds the
+                   client for wss://<domain>/ws; /etc/tandem/tandem.env
+                   (STUDY_CONFIG, HOST=127.0.0.1, PORT, SIDECAR_URL,
+                   DATA_DIR=/opt/tandem/data, backup keys); starter
+                   studies/pilot.env with a random ADMIN_TOKEN; systemd
+                   services; Caddy HTTPS; firewall (22/80/443); swap on small
+                   droplets; restores the yarn.lock files npm ci rewrites so
+                   logs don't say code.dirty
+        update.sh  pull a ref, rebuild, restart; refuses while participants
+                   are connected (asks the admin view) unless --force
+        Caddyfile  / = built client (assets cached for good, page
+                   revalidated), /ws and /admin → game server; HSTS; no access
+                   log (URLs carry Prolific IDs)
+        README.md  droplet, DNS, setup, study settings, Spaces backup, checks,
+                   Prolific URL, running a session, updates, data, troubleshooting
+      Files: deploy/* (new), sidecar/requirements-lock.txt (new)
+
+[test] New server/test/completion.js (npm run test:completion; own server on
+      :8097; added to test:all), 27 checks: no URL for someone who never
+      played or before finishing; no round after ROUNDS; URL after finishing,
+      logged once; a finisher leaving doesn't drop them or abort the group
+      (MIN_GROUP_SIZE = group size); a player whose seat was held when the last
+      round ended counts as finished; returning finishers get "finished" and
+      the URL and can't rejoin a lobby; shutdown sends finished players no
+      early ending (never-seated: unpaid ending); admin stages; room/participant
+      log events. test.env: ROUNDS=10 (the older suites play several rounds).
+      test:all (7 suites) passed twice in a row; sidecar 19/19.
+      Browser (headless Chrome): one player from consent to completion screen,
+      reload keeps the link, redirect to COMPLETION_URL.
+      Deployment: scripts pass bash -n; Caddyfile validated with Caddy 2.8.4;
+      production client build + game server on 127.0.0.1 + this Caddyfile (over
+      HTTP) run locally: game over /ws, admin through the proxy, cache headers,
+      app fallback, server unreachable except via localhost, and a full
+      game-to-completion run in the browser. setup.sh/update.sh not yet run
+      on a real droplet.
+
+KNOWN ISSUES (open, additions)
+- [FIXED above] "Normal completion has no completion link yet".
+- ROUNDS (server) must equal the number of "game" screens in the client
+  timeline; nothing checks this.
+- Finished participants are remembered in memory only: after a server restart
+  a finisher who hadn't reached the completion screen gets "new" and ends as
+  aborted (paid per PAY_ABORTED), not completed.
+- The debrief text in expTimeline.ts is still a placeholder.

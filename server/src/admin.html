@@ -1,0 +1,199 @@
+<!doctype html>
+<!--
+Tandem admin view (read-only). Served by the game server at /admin; polls
+/admin/state every 2 s with the admin token (asked once, kept for this tab;
+#token=... in the URL also works). See src/admin.ts.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tandem admin</title>
+<style>
+  :root { --bg: #f7f7f8; --card: #fff; --ink: #1f2328; --muted: #6b7280; --line: #e5e7eb;
+          --ok: #15803d; --warn: #b45309; --bad: #b91c1c; --accent: #2563eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #16181c; --card: #1f2227; --ink: #e6e6e6; --muted: #9aa0a6; --line: #33373d;
+            --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --accent: #60a5fa; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--ink); }
+  main { max-width: 1400px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 15px; margin: 20px 0 8px; }
+  .muted { color: var(--muted); }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid currentColor; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); } .accent { color: var(--accent); }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+  .chip b { font-size: 18px; margin-right: 4px; }
+  .rooms { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 12px; }
+  .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 6px 0; }
+  .bar > div { height: 100%; background: var(--accent); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  #banner { display: none; padding: 8px 12px; border-radius: 8px; margin-bottom: 12px; background: #fee2e2; color: #991b1b; }
+  #login { max-width: 360px; margin: 80px auto; }
+  input { font: inherit; padding: 6px 8px; width: 100%; margin: 8px 0; }
+  .scroll { max-height: 420px; overflow: auto; }
+  code { font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <form id="login" class="card" style="display:none">
+    <h1>Tandem admin</h1>
+    <p class="muted">Enter the server's ADMIN_TOKEN. It is kept only for this browser tab.</p>
+    <input id="token" type="password" autocomplete="off" placeholder="Admin token">
+    <button type="submit">Open</button>
+    <p id="loginError" class="bad"></p>
+  </form>
+
+  <div id="app" style="display:none">
+    <div id="banner"></div>
+    <div class="row" style="justify-content: space-between">
+      <div><h1 id="title">Tandem admin</h1><div id="subtitle" class="muted"></div></div>
+      <div id="health" class="row"></div>
+    </div>
+
+    <h2>Participants by stage</h2>
+    <div id="funnel" class="chips"></div>
+
+    <h2>Rooms</h2>
+    <div id="rooms" class="rooms"></div>
+
+    <h2>Participants</h2>
+    <div class="card scroll"><table id="participants"></table></div>
+
+    <h2>Recent events <span class="muted">(newest first; ticks omitted; full detail is in the data logs)</span></h2>
+    <div class="card scroll"><table id="events"></table></div>
+  </div>
+</main>
+
+<script>
+const TOKEN_KEY = "tandem_admin_token";
+const POLL_MS = 2000;
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const ago = (t, now) => t == null ? "–" : (s => s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`)(Math.max(0, Math.round((now - t) / 1000)));
+const dur = (ms) => { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+const clock = (t) => new Date(t).toLocaleTimeString();
+const cook = (agentId) => agentId ? `#${Number(agentId.split("_")[1]) + 1}` : "–";
+const STATUS_CLASS = { playing: "ok", lobby: "accent", starting: "warn", "between rounds": "muted", finished: "ok", closed: "muted" };
+
+let token = null;
+let timer = null;
+
+function initToken() {
+  const m = /token=([^&]+)/.exec(location.hash);
+  if (m) { sessionStorage.setItem(TOKEN_KEY, decodeURIComponent(m[1])); history.replaceState(null, "", location.pathname); }
+  try { token = sessionStorage.getItem(TOKEN_KEY); } catch { token = null; }
+}
+
+function showLogin(msg) {
+  clearTimeout(timer);
+  $("app").style.display = "none";
+  $("login").style.display = "block";
+  $("loginError").textContent = msg ?? "";
+}
+
+$("login").addEventListener("submit", (e) => {
+  e.preventDefault();
+  token = $("token").value.trim();
+  try { sessionStorage.setItem(TOKEN_KEY, token); } catch {}
+  $("login").style.display = "none";
+  poll();
+});
+
+async function poll() {
+  clearTimeout(timer);
+  if (!token) return showLogin();
+  try {
+    const r = await fetch(location.pathname.replace(/\/?$/, "/") + "state", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+    if (r.status === 401) { try { sessionStorage.removeItem(TOKEN_KEY); } catch {} token = null; return showLogin("Wrong token."); }
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    render(await r.json());
+    $("banner").style.display = "none";
+  } catch (e) {
+    $("banner").textContent = `Can't reach the server (${e.message}). Showing the last data received; retrying…`;
+    $("banner").style.display = "block";
+  }
+  timer = setTimeout(poll, POLL_MS);
+}
+
+function render(s) {
+  $("app").style.display = "block";
+  const st = s.study;
+  $("title").textContent = `${st.studyName ?? "(unnamed study)"} · ${st.condition ?? "(no condition)"}`;
+  $("subtitle").innerHTML = esc(`${st.game}${st.layout ? ` (${st.layout})` : ""} · ${st.playersPerRoom} per room, abort below ${st.minGroupSize} · ` +
+    `${st.horizon} steps × ${st.tickMs} ms · seed ${st.seed}${st.seedPerRoom ? " + room" : ""} · ` +
+    `code ${(st.code?.commit ?? "?").slice(0, 8)}${st.code?.dirty ? " (uncommitted changes)" : ""}`) +
+    ` · <span class="muted">updated ${esc(clock(s.now))}</span>`;
+
+  const sc = s.sidecar, b = s.backup;
+  const sidecarBadge = sc.ok === true ? `<span class="badge ok">sidecar OK · ${esc(sc.latencyMs)} ms · ${esc(sc.envs)} envs</span>`
+    : sc.ok === false ? `<span class="badge bad" title="${esc(sc.error)}">sidecar DOWN</span>` : `<span class="badge muted">sidecar ?</span>`;
+  const backupBadge = !b.enabled ? `<span class="badge warn" title="BACKUP_S3_BUCKET not set">backup OFF</span>`
+    : b.failuresInARow > 0 ? `<span class="badge bad" title="${esc(b.lastFailure?.error)}">backup failing (${esc(b.failuresInARow)})</span>`
+    : `<span class="badge ok" title="${esc(b.target)}">backup OK · last ${esc(ago(b.lastSuccessAt, s.now))}</span>`;
+  $("health").innerHTML = `${sidecarBadge} ${backupBadge} <span class="badge muted">up ${esc(dur(s.server.uptimeS * 1000))} · ${esc(s.server.memoryMB)} MB</span>`;
+
+  const order = ["before lobby", "lobby", "playing", "after a round", "finished game", "completed"];
+  const stages = Object.entries(s.counts.byStage).sort(([a], [b]) => {
+    const ia = order.indexOf(a), ib = order.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+  });
+  $("funnel").innerHTML = `<div class="chip"><b>${esc(s.counts.connected)}</b>connected now</div>` +
+    stages.map(([k, n]) => `<div class="chip"><b>${esc(n)}</b>${esc(k)}</div>`).join("") +
+    `<div class="chip"><b>${esc(s.counts.rooms)}</b>rooms open</div>`;
+
+  $("rooms").innerHTML = s.rooms.length ? s.rooms.map((r) => roomCard(r, s.now)).join("") : `<div class="muted">No rooms open.</div>`;
+
+  $("participants").innerHTML = `<tr><th>Participant</th><th>Stage</th><th>Room</th><th>Cook</th><th>Last screen</th><th>Last seen</th><th>Ended</th></tr>` +
+    s.participants.map((p) => `<tr>
+      <td><span class="dot" style="background:${p.connected ? "var(--ok)" : "var(--line)"}" title="${p.connected ? "connected" : "not connected"}"></span><code>${esc(p.participantId)}</code></td>
+      <td>${esc(p.stage)}</td><td>${esc(p.room ?? "–")}</td><td>${esc(cook(p.agentId))}</td>
+      <td>${p.screen ? `${esc(p.screen.id)} <span class="muted">(${esc(ago(p.screen.at, s.now))})</span>` : "–"}</td>
+      <td>${esc(ago(p.lastSeen, s.now))}</td>
+      <td>${p.ended ? `${esc(p.ended.outcome)}, ${p.ended.paid ? "paid" : "not paid"} <span class="muted">${esc(p.ended.reason)}</span>` : ""}</td>
+    </tr>`).join("");
+
+  $("events").innerHTML = s.events.map((e) => `<tr><td class="muted">${esc(clock(e.t))}</td><td>${esc(e.log)}</td><td>${esc(e.event)}</td>
+    <td><code>${esc(Object.entries(e.details).map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join("  "))}</code></td></tr>`).join("");
+}
+
+function roomCard(r, now) {
+  const playing = r.status === "playing";
+  const pct = playing && r.horizon ? Math.min(100, (100 * r.step) / r.horizon) : 0;
+  const lat = r.stepLatencyMs;
+  const health = r.stepErrorsInARow > 0 ? `<span class="bad">${esc(r.stepErrorsInARow)} failed steps in a row</span>`
+    : r.status === "starting" && r.startRetries > 0 ? `<span class="warn">waiting for sidecar (try ${esc(r.startRetries)})</span>` : "";
+  const seats = r.seats.slice().sort((a, b) => a.agentId.localeCompare(b.agentId, undefined, { numeric: true }));
+  return `<div class="card">
+    <div class="row" style="justify-content: space-between">
+      <b>${esc(r.id)}</b>
+      <span class="badge ${STATUS_CLASS[r.status] ?? ""}">${esc(r.status)}</span>
+    </div>
+    <div class="muted">${esc(r.seats.length)}/${esc(r.capacity)} seated · round ${esc(r.trial)} of ${esc(r.rounds)} · ${esc(r.trialsCompleted)} done · opened ${esc(ago(r.createdAt, now))} · seed ${esc(r.options.seed)}</div>
+    ${playing ? `<div class="bar"><div style="width:${pct}%"></div></div>
+      <div>step ${esc(r.step)} / ${esc(r.horizon)} · ${esc(dur(now - r.trialStartedAt))} elapsed${r.score !== null ? ` · <b>score ${esc(r.score)}</b>` : ""}</div>
+      <div class="muted">step latency ${lat ? `${esc(lat.mean)} ms avg, ${esc(lat.max)} max` : "–"} · <span class="${r.overruns ? "warn" : ""}">${esc(r.overruns)} overruns</span></div>` : ""}
+    ${health ? `<div>${health}</div>` : ""}
+    <table style="margin-top:6px">
+      <tr><th>Cook</th><th>Participant</th><th>Status</th></tr>
+      ${seats.map((x) => `<tr><td>${esc(cook(x.agentId))}</td><td><code>${esc(x.participantId)}</code></td>
+        <td>${x.connected ? `<span class="ok">connected</span>` : `<span class="warn">disconnected${x.seatHeldForMs != null ? ` · seat held ${esc(Math.ceil(x.seatHeldForMs / 1000))}s` : ""}</span>`}
+        ${!playing && x.ready ? ` · ready` : ""}</td></tr>`).join("")}
+    </table>
+  </div>`;
+}
+
+initToken();
+poll();
+</script>
+</body>
+</html>

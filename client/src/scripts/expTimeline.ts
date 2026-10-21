@@ -60,6 +60,12 @@ Your own cook is marked YOU. The others are your teammates, numbered 1 and up. C
         "id": "debriefing",
         "type": "display",
         "text": "That's all for now! Thanks so much to all of you for your hard work in making this game jam a success. (And especially to Renée for all her work organizing!) I'll keep building out this project, so watch this space!",
+    },
+    {
+        // Must be last: sends participants who finished to the server's COMPLETION_URL.
+        // The server's ROUNDS must equal the number of "game" screens above.
+        id: "completion",
+        type: "completion",
     }
 ];
 

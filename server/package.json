@@ -11,7 +11,9 @@
     "test:datalog": "node test/datalog.js",
     "test:backup": "node test/backup.js",
     "test:overcooked": "node test/overcooked.js",
-    "test:all": "node test/bots.js && node test/reconnect.js && node test/groupsize.js && node test/datalog.js && node test/overcooked.js"
+    "test:admin": "node test/admin.js",
+    "test:completion": "node test/completion.js",
+    "test:all": "node test/bots.js && node test/reconnect.js && node test/groupsize.js && node test/datalog.js && node test/overcooked.js && node test/admin.js && node test/completion.js"
   },
   "keywords": [],
   "author": "",

@@ -24,6 +24,11 @@ export async function envStep(env_id: string, actions: Record<string, number>) {
   return j(await fetch(`${BASE}/env/step`, { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ env_id, actions }) }));
 }
 
+/** Sidecar status for the admin view: { ok, envs, compiled_configs }. */
+export async function sidecarHealth(timeoutMs = 1500) {
+  return j(await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(timeoutMs) }));
+}
+
 export async function envClose(env_id: string) {
   return j(await fetch(`${BASE}/env/close`, { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ env_id }) }));
 }

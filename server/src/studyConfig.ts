@@ -12,6 +12,9 @@ Payment rules (each can be changed per study):
   never seated (e.g. still on consent when the server stopped) → never paid
   replaced (opened in another tab)    → not an ending; they continue there
 
+Finishing: a participant who played every round (ROUNDS) gets COMPLETION_URL
+on the study's final screen (asked for by the client; never in the bundle).
+
 Paid participants are sent to the outcome's completion URL. For Prolific, use a
 separate completion code per outcome and set that code's action in Prolific
 (e.g. approve automatically) so these submissions are handled without manual
@@ -44,6 +47,8 @@ if (!GAMES.includes(game)) {
 const layout = game === "overcooked" ? (process.env.LAYOUT?.trim() || "open_room") : null;
 
 const playersPerRoom = Number(process.env.REQUIRED_PLAYERS ?? 2);
+/** Rounds each group plays; after the last one the group is finished (must match the client timeline's game screens) */
+const rounds = Math.max(1, Math.floor(Number(process.env.ROUNDS ?? 1)) || 1);
 const seed = Number(process.env.SEED ?? 123);
 const seedPerRoom = envBool("SEED_PER_ROOM", false);
 
@@ -79,6 +84,9 @@ export const studyConfig = {
   seed,
   seedPerRoom,
   playersPerRoom,
+  rounds,
+  /** Where participants who finish every round are sent (e.g. the Prolific completion URL) */
+  completionUrl: envUrl("COMPLETION_URL"),
   /**
    * Once a group has started, if drop-outs leave fewer than this many players,
    * the study is aborted for the rest of the group. Default: the full group
@@ -93,9 +101,9 @@ export const studyConfig = {
 
 /** What a data log records about the study this server is running. */
 export function studyInfo() {
-  const { studyName, condition, configFile, code, game, layout, seed, seedPerRoom, playersPerRoom, minGroupSize, payment } = studyConfig;
+  const { studyName, condition, configFile, code, game, layout, seed, seedPerRoom, playersPerRoom, rounds, minGroupSize, payment } = studyConfig;
   return {
-    studyName, condition, configFile, code, game, layout, seed, seedPerRoom, playersPerRoom, minGroupSize,
+    studyName, condition, configFile, code, game, layout, seed, seedPerRoom, playersPerRoom, rounds, minGroupSize,
     paid: { aborted: payment.aborted.paid, dropped: payment.dropped.paid },
   };
 }
@@ -114,6 +122,9 @@ export function unseatedEndInfo(reason: string): EndInfo {
 /** Warn at startup about settings that would strand paid participants. */
 export function checkStudyConfig() {
   const { payment, minGroupSize } = studyConfig;
+  if (!studyConfig.completionUrl) {
+    console.warn("[config] COMPLETION_URL is not set: participants who finish won't be sent anywhere to complete.");
+  }
   for (const [outcome, p] of Object.entries(payment)) {
     if (p.paid && !p.completionUrl) {
       console.warn(`[config] ${outcome} participants are paid (PAY_${outcome.toUpperCase()}) but ` +
@@ -126,6 +137,6 @@ export function checkStudyConfig() {
   if (studyConfig.code.dirty) console.warn("[config] running with uncommitted code changes (logged as code.dirty=true).");
   console.log(`[config] study ${studyConfig.studyName ?? "(unnamed)"} / condition ${studyConfig.condition ?? "(none)"}; ` +
     `game ${game}${layout ? ` (layout ${layout})` : ""}; seed ${seed}${seedPerRoom ? " + room number" : " (same for every room)"}`);
-  console.log(`[config] group size ${playersPerRoom} (abort below ${minGroupSize}); ` +
+  console.log(`[config] group size ${playersPerRoom} (abort below ${minGroupSize}); ${rounds} round(s); ` +
     `pay aborted=${payment.aborted.paid}, dropped=${payment.dropped.paid}`);
 }

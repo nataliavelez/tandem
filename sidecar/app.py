@@ -12,10 +12,15 @@ import jax
 import jax.numpy as jnp
 
 from schemas import *
-from env_registry import ENVS, build_env, env_spec, to_public_state, num_actions, obs_lists, EnvHandle
+from env_registry import ENVS, _COMPILED, build_env, env_spec, to_public_state, num_actions, obs_lists, EnvHandle
 from overcooked_task import LayoutError
 
 app = FastAPI(title="Tandem JaxMARL Sidecar", version="0.1")
+
+@app.get("/health")
+def health():
+    # For the server's admin view: live envs (one per room) and compiled game configs
+    return {"ok": True, "envs": len(ENVS), "compiled_configs": len(_COMPILED)}
 
 def ensure_env(env_id: str) -> EnvHandle:
     if env_id not in ENVS:

@@ -14,6 +14,13 @@ If not, the seat is freed; for a locked group the participant is also marked
 instead of a new group. If drop-outs leave a locked group below MIN_GROUP_SIZE,
 the study is aborted for everyone still in it.
 
+Finishing: when a room's last round ends, everyone seated in it (connected or
+holding a seat) is marked finished. Finished participants can no longer be
+dropped or aborted: when they leave (e.g. off to Prolific) their seat is freed
+at once, and a finished room never aborts for being too small. A returning
+finished participant gets SESSION_STATUS finished; STUDY_COMPLETE gives them
+the completion URL (markCompleted records it).
+
 Aborts: if a room can't continue (GameRoom.abort) or the server shuts down
 (abortAll), every participant in it is marked "ended" (aborted, paid per
 PAY_ABORTED), so a reconnect later still lands on the same end screen.
@@ -31,8 +38,12 @@ export class RoomManager {
   private rooms = new Map<RoomID, GameRoom>();
   private playerRoom = new Map<PlayerID, RoomID>();
   private graceTimers = new Map<PlayerID, NodeJS.Timeout>();
+  /** When each held seat will be freed (for the admin view) */
+  private graceDeadlines = new Map<PlayerID, number>();
   /** Participants who can't continue, and why (kept for the server's lifetime). */
   private ended = new Map<PlayerID, EndInfo>();
+  /** Participants who played every round (kept for the server's lifetime). */
+  private finished = new Map<PlayerID, { roomId: RoomID; rounds: number; at: number; completedAt: number | null }>();
   private nextRoomNum = 1;
 
   /** makeOptions gets the room's number (room_1 → 1), e.g. to pick its seed. */
@@ -47,6 +58,18 @@ export class RoomManager {
 
   endedStatus(playerId: PlayerID): EndInfo | null {
     return this.ended.get(playerId) ?? null;
+  }
+
+  finishedStatus(playerId: PlayerID) {
+    return this.finished.get(playerId) ?? null;
+  }
+
+  /** The participant was given the completion URL. Returns true the first time. */
+  markCompleted(playerId: PlayerID): boolean {
+    const f = this.finished.get(playerId);
+    if (!f || f.completedAt !== null) return false;
+    f.completedAt = Date.now();
+    return true;
   }
 
   /** Everyone currently holding a seat (connected or not). */
@@ -69,6 +92,7 @@ export class RoomManager {
     if (existing) return { room: existing, agentId: existing.agentFor(playerId)! };
     const ended = this.ended.get(playerId);
     if (ended) return { error: `Session ended: ${ended.reason}` };
+    if (this.finished.has(playerId)) return { error: "You have already finished the game." };
 
     let room: GameRoom | undefined;
     if (roomId) {
@@ -90,17 +114,26 @@ export class RoomManager {
   disconnect(playerId: PlayerID) {
     const room = this.roomOf(playerId);
     if (!room) return;
+    // Finished: nothing to hold the seat for (they've likely gone on to Prolific)
+    if (room.isDone) {
+      this.leave(playerId, "finished");
+      return;
+    }
     room.markDisconnected(playerId);
 
     const locked = room.isLocked;
     const graceMs = locked ? TRIAL_GRACE_MS : LOBBY_GRACE_MS;
     console.log(`[rooms] ${playerId} disconnected from ${room.id}; holding seat ${graceMs / 1000}s`);
     this.clearGrace(playerId);
+    this.graceDeadlines.set(playerId, Date.now() + graceMs);
     this.graceTimers.set(playerId, setTimeout(() => {
       this.graceTimers.delete(playerId);
-      console.log(`[rooms] ${playerId} did not return to ${room.id}; freeing seat`);
-      if (locked) this.ended.set(playerId, endInfo("dropped", "you left the study or were disconnected for too long"));
-      this.leave(playerId, locked ? "dropped" : "left");
+      this.graceDeadlines.delete(playerId);
+      // The group may have finished while the seat was held: then they finished too
+      const done = this.finished.has(playerId);
+      console.log(`[rooms] ${playerId} did not return to ${room.id}; freeing seat${done ? " (finished)" : ""}`);
+      if (locked && !done) this.ended.set(playerId, endInfo("dropped", "you left the study or were disconnected for too long"));
+      this.leave(playerId, done ? "finished" : locked ? "dropped" : "left");
     }, graceMs));
   }
 
@@ -119,7 +152,7 @@ export class RoomManager {
   }
 
   /** Free the seat for good (grace period expired). */
-  leave(playerId: PlayerID, reason: "left" | "dropped" = "left") {
+  leave(playerId: PlayerID, reason: "left" | "dropped" | "finished" = "left") {
     this.clearGrace(playerId);
     const room = this.roomOf(playerId);
     this.playerRoom.delete(playerId);
@@ -129,7 +162,8 @@ export class RoomManager {
     console.log(`[rooms] ${playerId} ${reason} ${room.id} (${room.size}/${room.capacity})`);
 
     // A started group that's too small to continue: end it for everyone left
-    if (room.isLocked && !room.isEmpty && room.size < studyConfig.minGroupSize) {
+    // (not once it has finished: everyone in it has completed the game)
+    if (room.isLocked && !room.isDone && !room.isEmpty && room.size < studyConfig.minGroupSize) {
       room.abort(`Too many participants left the group (${room.size} of ${room.capacity} remain).`);
       return; // abortRoom already freed and disposed the room
     }
@@ -141,11 +175,25 @@ export class RoomManager {
     }
   }
 
-  /** Server shutting down: end the study (paid) for everyone in every room. */
+  /** Server shutting down: end the study (paid) for everyone in every unfinished room. */
   async abortAll(reason: string) {
     const rooms = [...this.rooms.values()];
-    for (const room of rooms) room.abort(reason);
+    // Finished rooms aren't aborted: their players have completed the game
+    for (const room of rooms) if (!room.isDone) room.abort(reason);
     await Promise.allSettled(rooms.map((r) => r.dispose()));
+  }
+
+  /** The last round ended: everyone still seated (connected or not) has finished. */
+  private finishRoom(room: GameRoom) {
+    const now = Date.now();
+    for (const pid of room.playerIds()) {
+      this.finished.set(pid, { roomId: room.id, rounds: room.trialsCompleted, at: now, completedAt: null });
+    }
+    // Seats held for disconnected players: they finished too; free the seats now
+    for (const pid of room.playerIds()) {
+      if (this.graceTimers.has(pid)) this.leave(pid, "finished");
+    }
+    console.log(`[rooms] ${room.id} finished all rounds`);
   }
 
   /** Room can't continue: everyone in it is done (aborted), and the room is freed. */
@@ -163,12 +211,32 @@ export class RoomManager {
   private clearGrace(playerId: PlayerID) {
     const t = this.graceTimers.get(playerId);
     if (t) { clearTimeout(t); this.graceTimers.delete(playerId); }
+    this.graceDeadlines.delete(playerId);
+  }
+
+  /** Rooms (with how long each held seat has left) and ended participants, for the admin view. */
+  snapshot() {
+    const now = Date.now();
+    const rooms = [...this.rooms.values()].map((r) => {
+      const s = r.snapshot();
+      return {
+        ...s,
+        seats: s.seats.map((seat) => {
+          const deadline = this.graceDeadlines.get(seat.participantId);
+          return { ...seat, seatHeldForMs: deadline ? Math.max(0, deadline - now) : null };
+        }),
+      };
+    });
+    // Completion URLs (codes) are left out: the admin view only needs whether they're paid
+    const ended = [...this.ended].map(([participantId, { outcome, reason, paid }]) => ({ participantId, outcome, reason, paid }));
+    const finished = [...this.finished].map(([participantId, f]) => ({ participantId, ...f }));
+    return { rooms, ended, finished };
   }
 
   private createRoom(): GameRoom {
     const num = this.nextRoomNum++;
     const id: RoomID = `room_${num}`;
-    const room: GameRoom = new GameRoom(id, this.makeOptions(num), (reason) => this.abortRoom(room, reason));
+    const room: GameRoom = new GameRoom(id, this.makeOptions(num), (reason) => this.abortRoom(room, reason), () => this.finishRoom(room));
     this.rooms.set(id, room);
     console.log(`[rooms] created ${id} (data: ${room.log.filePath})`);
     return room;

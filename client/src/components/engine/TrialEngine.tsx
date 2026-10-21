@@ -9,6 +9,12 @@ Resuming after a refresh or reconnect:
     resumed + not running  → just past the last completed game trial (or the
                              waiting room if none completed yet)
 
+    finished               → just past the last game screen (they played every round)
+
+Finishing: the timeline's "completion" screen asks the server for the
+completion URL (Completion.tsx). The server-unreachable check below only
+applies from the waiting room through the last game screen.
+
 Ending early (EarlyEnd screen; saved in sessionStorage so a refresh stays there):
     SESSION_STATUS ended            → as the server says (outcome, paid, URL)
     SESSION_STATUS new while past the waiting room
@@ -37,6 +43,8 @@ import { WaitingRoom } from "../trials/WaitingRoom";
 import { GameTrial } from "../trials/GameTrial";
 import { InstructionsScreen } from "../trials/InstructionsScreen";
 import { EarlyEnd } from "../trials/EarlyEnd";
+import { Completion } from "../trials/Completion";
+import { loadCompletion } from "../../context/completion";
 import { studyConfig } from "../../scripts/studyConfig";
 import { loadAbortPolicy } from "../../context/abortPolicy";
 import { logEvent } from "./DataLogger";
@@ -67,10 +75,20 @@ function loadIndex(length: number): number {
   }
 }
 
+/** Index of the last game screen, or -1. */
+function lastGameIndex(timeline: TrialTimeline): number {
+  return timeline.reduce((last, t, i) => (t.type === "game" ? i : last), -1);
+}
+
 /** Where the participant should be, given the server's view of their session. */
 function resumeIndex(timeline: TrialTimeline, status: SessionStatus, current: number): number {
   const gameIdx = timeline.flatMap((t, i) => (t.type === "game" ? [i] : []));
   const waitingIdx = timeline.findIndex((t) => t.type === "waiting-room");
+
+  if (status.status === "finished") {
+    const last = lastGameIndex(timeline);
+    return last >= 0 ? Math.min(timeline.length - 1, Math.max(current, last + 1)) : current;
+  }
 
   if (status.status === "resumed") {
     if (status.running) return gameIdx[status.trialsCompleted] ?? current;
@@ -89,7 +107,7 @@ function firstServerIndex(timeline: TrialTimeline): number {
 }
 
 /** Screens that need the server; show a banner on them while reconnecting. */
-const NEEDS_SERVER = new Set<TrialConfig["type"]>(["waiting-room", "game"]);
+const NEEDS_SERVER = new Set<TrialConfig["type"]>(["waiting-room", "game", "completion"]);
 
 export function TrialEngine({ timeline }: Props) {
   const { sessionStatus, connected } = useSocket();
@@ -97,8 +115,10 @@ export function TrialEngine({ timeline }: Props) {
   const [earlyEnd, setEarlyEnd] = useState<EndInfo | null>(loadEarlyEnd);
   const currentTrial: TrialConfig = timeline[currentIndex];
   const serverIdx = firstServerIndex(timeline);
-  // From the waiting room on, the participant's study depends on the server
-  const inMultiplayer = serverIdx >= 0 && currentIndex >= serverIdx;
+  const lastGameIdx = lastGameIndex(timeline);
+  // From the waiting room through the last game, the participant's study depends
+  // on the server (after that they have finished; losing the server can't undo that)
+  const inMultiplayer = serverIdx >= 0 && currentIndex >= serverIdx && (lastGameIdx < 0 || currentIndex <= lastGameIdx);
 
   useEffect(() => {
     try { sessionStorage.setItem(INDEX_KEY, String(currentIndex)); } catch { /* ignore */ }
@@ -134,6 +154,8 @@ export function TrialEngine({ timeline }: Props) {
     if (sessionStatus.status === "ended") {
       const { outcome, reason, paid, completionUrl } = sessionStatus;
       endEarly({ outcome, reason, paid, completionUrl });
+    } else if (sessionStatus.status === "new" && currentIndex > lastGameIdx && lastGameIdx >= 0 && loadCompletion()) {
+      // Server restarted after giving us our completion link: nothing to do
     } else if (sessionStatus.status === "new" && serverIdx >= 0 && currentIndex > serverIdx) {
       // We were in a group, but the server no longer knows us: it restarted
       endEarly({ outcome: "aborted", reason: "The study server was restarted.", ...loadAbortPolicy() });
@@ -217,6 +239,9 @@ function renderTrial(currentTrial: TrialConfig, currentIndex: number, advance: (
         />
       );
     }
+
+    case "completion":
+      return <Completion key={currentTrial.id} config={currentTrial} />;
 
     // case "post-test":
     //   return (

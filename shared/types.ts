@@ -149,7 +149,10 @@ export type CoreClientEvent =
   // Something the participant did outside the game (consent, screen changes,
   // survey answers), for the participants data log. id is unique per entry; the
   // server answers LOG_ACK so the client can resend anything not acknowledged.
-  | { type: "CLIENT_LOG"; id: string; event: string; clientTime: number; data?: Record<string, unknown> };
+  | { type: "CLIENT_LOG"; id: string; event: string; clientTime: number; data?: Record<string, unknown> }
+  // Sent from the final screen: asks for the completion URL. The server answers
+  // COMPLETION, with the URL only if it saw this participant finish every round.
+  | { type: "STUDY_COMPLETE" };
 
 export type ClientEvent = CoreClientEvent | MpeClientEvent;
 
@@ -169,12 +172,18 @@ export type CoreServerEvent =
   | { type: "PLAYER_LEFT"; playerId: PlayerID }
   | { type: "ERROR"; message: string }
   | { type: "LOG_ACK"; id: string }
+  // Reply to STUDY_COMPLETE. completionUrl null = this participant did not finish
+  // the game (reason says why); the client asks them to contact the researcher.
+  | { type: "COMPLETION"; completionUrl: string | null; reason?: string }
   // Reply to HELLO.
   //  new:     server has no seat for this participant
   //  resumed: seat restored; running/trialsCompleted let the client jump to the right screen
   //           (if running, a TRIAL_START for the current trial follows)
+  //  finished: participant played every round (ROUNDS); they're past the game
+  //           (survey, debrief, completion) and can no longer be dropped or aborted
   //  ended:   participant can't continue; client should stop (see EndInfo)
   | { type: "SESSION_STATUS"; status: "new" }
+  | { type: "SESSION_STATUS"; status: "finished"; roundsCompleted: number }
   | { type: "SESSION_STATUS"; status: "resumed"; roomId: RoomID; agentId: AgentID; running: boolean; trialsCompleted: number }
   | ({ type: "SESSION_STATUS"; status: "ended" } & EndInfo)
   // Sent when a player gets (or gets back) a seat: what to do if the server

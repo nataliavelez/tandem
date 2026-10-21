@@ -3,14 +3,23 @@ Created by: Elizabeth Mieczkowski, Updated: 09/2025
 '''
 
 import requests, math
+import pytest
 
 import os
 BASE = os.environ.get("SIDECAR_URL", "http://127.0.0.1:8001")
+CREATED = []  # env ids to close when the tests finish (the sidecar may be a live one)
+
+@pytest.fixture(autouse=True, scope="module")
+def close_envs():
+    yield
+    for env_id in CREATED:
+        requests.post(f"{BASE}/env/close", json={"env_id": env_id})
 
 def create_env(seed=123, N=3, L=3, horizon=10):
     r = requests.post(f"{BASE}/env/create", json={
         "task":"simple_spread","seed":seed,"num_agents":N,"num_landmarks":L,"episode_horizon":horizon
     }); r.raise_for_status()
+    CREATED.append(r.json()["env_id"])
     return r.json()["env_id"]
 
 def test_spec_and_reset():

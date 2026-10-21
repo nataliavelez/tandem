@@ -1,0 +1,36 @@
+# Caddy (HTTPS) config for Tandem. deploy/setup.sh installs it as
+# /etc/caddy/Caddyfile with __DOMAIN__ replaced. Caddy gets and renews the
+# certificate itself. No access log: request URLs carry Prolific IDs.
+__DOMAIN__ {
+	encode zstd gzip
+
+	# The game connection (WebSocket); the client is built with VITE_SERVER_URL=wss://<domain>/ws
+	handle /ws {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# Read-only admin view (the server checks the token)
+	handle /admin* {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# Everything else: the built client (single-page app)
+	handle {
+		root * /opt/tandem/app/client/dist
+		# Built assets have hashed names: cache for good. Anything else (the page
+		# itself) is revalidated, so participants always get the current client.
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		@page not path /assets/*
+		header @page Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+}

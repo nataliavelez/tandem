@@ -15,15 +15,20 @@ Outputs:
 - TRIAL_READY: mark player ready in their room; room starts when all seats are ready
 - PLAYER_ACTION: forward to the player's room; the room applies it to the
   player's OWN agent (any agentId sent by the client is ignored)
+- STUDY_COMPLETE (from the final screen): COMPLETION with COMPLETION_URL if
+  this participant finished every round (ROUNDS), else with null and a reason.
+  Logged once as study_completed.
 - CLIENT_LOG: write a browser-side event (consent, screen change, survey
   answers, early end) to the participants log with the player's room/agent,
   then LOG_ACK it. Repeats of an id (client resend) are acked, not rewritten.
 - CLOSE: hold the player's seat for a grace period (RoomManager.disconnect)
 - SIGINT/SIGTERM: end the study early for every participant (seated: aborted,
-  paid per PAY_ABORTED; not yet seated: not paid), close the data logs and
-  sidecar envs, then exit
+  paid per PAY_ABORTED; not yet seated: not paid; finished: left alone, they
+  completed the game), close the data logs and sidecar envs, then exit
 - Seated players also get ABORT_POLICY (paid? where to go?) in case the server
   later disappears without warning
+- HTTP on the same port: the read-only admin view (/admin, admin.ts; off
+  unless ADMIN_TOKEN is set). WebSocket upgrades go to the game.
 - Startup: asks the sidecar to compile the game once (warmSidecar), so the
   first rooms don't stall each other while compiling. If the sidecar rejects
   the game settings (e.g. a layout with fewer spawns than REQUIRED_PLAYERS),
@@ -36,6 +41,7 @@ Edited by: Elizabeth Mieczkowski, Updated: 09/2026
 */}
 
 import "./loadEnv"; // must be first: other modules read process.env on load
+import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import type { ClientEvent, ServerEvent, PlayerID } from "../../shared/types";
 import { RoomManager } from "./game/roomManager";
@@ -44,8 +50,11 @@ import { SidecarError } from "./game/sidecarClient";
 import { DataLog } from "./game/dataLog";
 import { backup } from "./backup";
 import { studyConfig, studyInfo, endInfo, unseatedEndInfo, checkStudyConfig } from "./studyConfig";
+import { createAdmin, type ParticipantInfo } from "./admin";
 
 const PORT = Number(process.env.PORT ?? 8080);
+/** Interface to listen on: unset = all (local/LAN testing); 127.0.0.1 behind the HTTPS proxy (deploy/) */
+const HOST = process.env.HOST?.trim() || undefined;
 const PLAYERS_PER_ROOM = studyConfig.playersPerRoom;
 const HORIZON = Number(process.env.HORIZON ?? 3000); // steps per trial
 
@@ -54,13 +63,13 @@ const LOG_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const LOG_EVENT_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 const MAX_LOG_DATA_BYTES = 32_768;
 
-const wss = new WebSocketServer({ port: PORT });
 
 const roomOptions = (roomNum: number): GameRoomOptions => ({
   game: studyConfig.game,
   seed: studyConfig.seedFor(roomNum),
   num_agents: PLAYERS_PER_ROOM,
   horizon: HORIZON,
+  rounds: studyConfig.rounds,
   ...(studyConfig.game === "overcooked" ? { layout: studyConfig.layout! } : { num_landmarks: 3 }),
 });
 const rooms = new RoomManager(roomOptions);
@@ -73,6 +82,18 @@ const loggedIds = new Set<string>();
 
 /** The live socket for each participant (at most one). */
 const sessions = new Map<PlayerID, WebSocket>();
+/** Everyone seen since the server started: when, and their last screen (for the admin view). */
+const participants = new Map<PlayerID, ParticipantInfo>();
+
+const admin = createAdmin({
+  rooms,
+  participants,
+  isConnected: (pid) => sessions.has(pid),
+  settings: { horizon: HORIZON, tickMs: Number(process.env.TICK_MS ?? 100) },
+});
+// One port for both: HTTP requests (admin view) and WebSocket upgrades (the game)
+const httpServer = http.createServer((req, res) => void admin.handle(req, res));
+const wss = new WebSocketServer({ server: httpServer });
 
 function send(ws: WebSocket, msg: ServerEvent) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
@@ -113,6 +134,9 @@ wss.on("connection", (ws) => {
     }
 
     participantsLog.write("participant_hello", { participantId: pid, meta, replacedOtherTab: !!(prev && prev !== ws) });
+    const now = Date.now();
+    const known = participants.get(pid);
+    participants.set(pid, { firstSeen: known?.firstSeen ?? now, lastSeen: now, meta, lastScreen: known?.lastScreen ?? null });
 
     const ended = rooms.endedStatus(pid);
     if (ended) {
@@ -122,7 +146,10 @@ wss.on("connection", (ws) => {
 
     const resumed = rooms.reconnect(pid, sendToMe, prev ? "replaced" : "reconnected");
     if (!resumed) {
-      send(ws, { type: "SESSION_STATUS", status: "new" });
+      const finished = rooms.finishedStatus(pid);
+      send(ws, finished
+        ? { type: "SESSION_STATUS", status: "finished", roundsCompleted: finished.rounds }
+        : { type: "SESSION_STATUS", status: "new" });
       return;
     }
     send(ws, { type: "ASSIGN_ROOM", roomId: resumed.room.id });
@@ -169,6 +196,8 @@ wss.on("connection", (ws) => {
       // Clients that skip HELLO get an anonymous, non-resumable identity
       if (!playerId) identify(`anon_${Math.random().toString(36).slice(2)}`);
       const pid = playerId!;
+      const seen = participants.get(pid);
+      if (seen) seen.lastSeen = Date.now();
 
       switch (msg.type) {
         // Lobby / Join
@@ -220,8 +249,30 @@ wss.on("connection", (ws) => {
               data: data ?? {},
             });
             loggedIds.add(key);
+            if (event === "screen_enter" && seen) {
+              seen.lastScreen = { id: String(data?.screenId ?? "") || null, type: String(data?.screenType ?? "") || null, at: Date.now() };
+            }
           }
           send(ws, { type: "LOG_ACK", id });
+          return;
+        }
+
+        // Final screen: hand out the completion URL to participants who finished
+        case "STUDY_COMPLETE": {
+          const finished = rooms.finishedStatus(pid);
+          if (!finished) {
+            participantsLog.write("completion_refused", { participantId: pid });
+            send(ws, { type: "COMPLETION", completionUrl: null, reason: "We have no record of you finishing the game." });
+            return;
+          }
+          if (rooms.markCompleted(pid)) {
+            participantsLog.write("study_completed", { participantId: pid, room: finished.roomId, rounds: finished.rounds });
+          }
+          send(ws, {
+            type: "COMPLETION",
+            completionUrl: studyConfig.completionUrl,
+            ...(studyConfig.completionUrl ? {} : { reason: "No completion link is configured for this study." }),
+          });
           return;
         }
 
@@ -259,6 +310,7 @@ async function shutdown(signal: string) {
   shuttingDown = true;
   console.log(`[orchestrator] ${signal}: ending the study for all participants`);
   wss.close(); // stop accepting connections
+  httpServer.close();
 
   // Exit even if something below hangs (leaves time for the final backup)
   setTimeout(() => process.exit(0), 10_000).unref();
@@ -270,7 +322,8 @@ async function shutdown(signal: string) {
   participantsLog.close();
   await backup.flush(6000);
   for (const [pid, ws] of sessions) {
-    if (!seated.has(pid)) send(ws, { type: "SESSION_STATUS", status: "ended", ...unseatedEndInfo(reason) });
+    // Finished participants completed the game: no early ending for them
+    if (!seated.has(pid) && !rooms.finishedStatus(pid)) send(ws, { type: "SESSION_STATUS", status: "ended", ...unseatedEndInfo(reason) });
     ws.close(1001, "server shutting down"); // close handshake flushes queued messages
   }
   // Give close frames a moment to go out
@@ -302,4 +355,7 @@ void (async () => {
   }
   console.warn("[orchestrator] could not warm up the sidecar; the first room will compile the game");
 })();
-console.log(`WS orchestrator listening on ws://127.0.0.1:${PORT} (${studyConfig.game}, ${PLAYERS_PER_ROOM} players/room)`);
+httpServer.listen(PORT, HOST, () => {
+  console.log(`WS orchestrator listening on ws://${HOST ?? "127.0.0.1"}:${PORT} (${studyConfig.game}, ${PLAYERS_PER_ROOM} players/room)`);
+  console.log(admin.enabled ? `[admin] read-only admin view at http://127.0.0.1:${PORT}/admin` : "[admin] admin view off (set ADMIN_TOKEN to turn it on)");
+});

@@ -7,7 +7,8 @@ export type TrialType =
   | "waiting-room"
   | "chat"
   | "game"
-  | "survey"; 
+  | "survey"
+  | "completion"; 
 
 interface BaseTrialConfig {
   id: string; 
@@ -69,6 +70,12 @@ export interface SurveyTrialConfig extends BaseTrialConfig {
   type: "survey";
 }
 
+/** Last screen for participants who finished: thanks + redirect to the completion URL (from the server). */
+export interface CompletionTrialConfig extends BaseTrialConfig {
+  type: "completion";
+  text?: string;
+}
+
 export type TrialConfig =
   | ConsentTrialConfig
   | DisplayTrialConfig
@@ -77,7 +84,8 @@ export type TrialConfig =
   | WaitingTrialConfig
   | ChatTrialConfig
   | GameTrialConfig
-  | SurveyTrialConfig;
+  | SurveyTrialConfig
+  | CompletionTrialConfig;
 
 export type TrialTimeline = TrialConfig[];
 

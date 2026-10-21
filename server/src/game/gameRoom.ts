@@ -9,6 +9,9 @@ onion soup, 1-10 cooks); the sidecar does the game-specific work.
 - Runs a serialized tick loop (next step is scheduled only after the previous
   sidecar call returns, so steps can never overlap or arrive out of order).
 - Resets the env after each trial so the next round starts from step 0.
+- After options.rounds rounds the room is done (isDone): it starts no more
+  trials and tells the manager (onDone), which marks everyone seated as
+  finished.
 - Actions: MPE applies each player's latest held action every tick.
   Overcooked is strictly one step per key press: presses are queued per
   player (up to MAX_QUEUED_PRESSES) and one is applied per tick; with no press
@@ -19,6 +22,7 @@ onion soup, 1-10 cooks); the sidecar does the game-specific work.
 - Writes every event and tick to a per-room JSONL data log (DataLog),
   including each episode's starting state (trial_start.initialState) and
   the study/code info (room_created.study).
+- snapshot(): its current status for the admin view (read-only).
 - abort(): if the room can't continue (environment never starts or is lost
   mid-trial, the group fell below MIN_GROUP_SIZE, or the server is shutting
   down), ends the study for the whole group with SESSION_STATUS ended/aborted;
@@ -58,6 +62,8 @@ export type GameRoomOptions = {
   num_landmarks?: number;
   /** Overcooked only: sidecar/layouts/<layout>.txt */
   layout?: string;
+  /** Rounds to play; after the last one the room is done */
+  rounds: number;
 };
 
 type Seat = {
@@ -112,11 +118,18 @@ export class GameRoom {
   private pressQueues = new Map<AgentID, number[]>();
   /** Team score this trial (Overcooked: sum of the shared delivery rewards) */
   private score = 0;
+  readonly createdAt = Date.now();
+  /** For the admin view: the current trial's start, latest step, and step timing */
+  private trialStartedAt: number | null = null;
+  private lastStep = 0;
+  private stepStats = { last: 0, max: 0, sum: 0, n: 0, overruns: 0 };
 
   private loopTimer: NodeJS.Timeout | null = null;
   private running = false;
   /** Once the first trial starts, the group is fixed; new players go elsewhere. */
   private locked = false;
+  /** Every round has been played */
+  private done = false;
   private disposed = false;
   private disposing: Promise<void> | null = null;
   private trialCount = 0;
@@ -126,6 +139,8 @@ export class GameRoom {
   private retryTimer: NodeJS.Timeout | null = null;
   /** State after the latest reset: where the next trial starts (step 0). */
   private resetState: SidecarState | null = null;
+  /** The post-trial reset while it is in flight (the next trial waits for it rather than resetting again) */
+  private resetting: Promise<void> | null = null;
   /** The current trial's TRIAL_START, re-sent to players who reconnect mid-trial. */
   private currentTrialStart: TrialStartMsg | null = null;
 
@@ -136,6 +151,8 @@ export class GameRoom {
     options: GameRoomOptions,
     /** Called after abort() has notified players; the manager frees the room. */
     private onAbort: (reason: string) => void = () => {},
+    /** Called once the last round has ended; the manager marks the players finished. */
+    private onDone: () => void = () => {},
   ) {
     this.id = id;
     this.options = options;
@@ -153,6 +170,8 @@ export class GameRoom {
   get isEmpty() { return this.seats.size === 0; }
   /** True once the first trial has started; the group is then fixed. */
   get isLocked() { return this.locked; }
+  /** True once every round has been played. */
+  get isDone() { return this.done; }
   get trialsCompleted() { return this.trialCount - (this.running ? 1 : 0); }
   playerIds(): PlayerID[] { return [...this.seats.keys()]; }
   /** Can a new player be placed here? */
@@ -191,7 +210,7 @@ export class GameRoom {
    * Free a seat for good. reason: "left" (lobby timeout) or "dropped" (gave up
    * waiting for a disconnected player after the group was locked).
    */
-  removePlayer(playerId: PlayerID, reason: "left" | "dropped" = "left") {
+  removePlayer(playerId: PlayerID, reason: "left" | "dropped" | "finished" = "left") {
     const seat = this.seats.get(playerId);
     if (!seat) return;
     this.seats.delete(playerId);
@@ -236,7 +255,7 @@ export class GameRoom {
 
   /** Mark a player ready; starts the trial when every seat is filled and ready. */
   async markReady(playerId: PlayerID) {
-    if (!this.seats.has(playerId) || this.running) return;
+    if (!this.seats.has(playerId) || this.running || this.done) return;
     this.readyPlayers.add(playerId);
     await this.tryStart();
   }
@@ -314,10 +333,13 @@ export class GameRoom {
    * so the room must retry by itself).
    */
   private async tryStart() {
-    if (this.running || this.starting || this.disposed || !this.allSeatedAndReady()) return;
+    if (this.running || this.starting || this.disposed || this.done || !this.allSeatedAndReady()) return;
     this.starting = true;
     try {
       await this.ensureReady();
+      // Players can be ready again before the post-trial reset returns; a second
+      // reset then would skip an episode and could log the wrong initialState
+      if (this.resetting) await this.resetting;
       // The reset after the last trial failed: without one, this trial would
       // start at the old episode's end and stop at once
       if (!this.resetState && this.envId) this.resetState = (await envReset(this.envId)).state;
@@ -360,6 +382,9 @@ export class GameRoom {
       spec: this.spec,
     };
     this.currentTrialStart = startMsg;
+    this.trialStartedAt = startMsg.startTimestamp;
+    this.lastStep = 0;
+    this.stepStats = { last: 0, max: 0, sum: 0, n: 0, overruns: 0 };
     this.log.write("trial_start", {
       trial: this.trialCount,
       startTimestamp: startMsg.startTimestamp,
@@ -401,8 +426,11 @@ export class GameRoom {
       const stepLatencyMs = Date.now() - stepStart;
       this.consecutiveErrors = 0;
       if (!this.running) return; // trial stopped while the step was in flight
+      const st = this.stepStats;
+      st.last = stepLatencyMs; st.max = Math.max(st.max, stepLatencyMs); st.sum += stepLatencyMs; st.n++;
 
       const running = this.toRunning(stepResp.state as SidecarState, stepResp.rewards ?? {});
+      this.lastStep = running.step;
 
       const serverTime = Date.now();
       this.broadcast({
@@ -454,7 +482,10 @@ export class GameRoom {
     // Keep a fixed cadence; if a step overran, don't burst to catch up
     const now = Date.now();
     const next = targetTime + TICK_MS;
-    if (now > next) console.warn(`[room ${this.id}] tick overran by ${now - next}ms`);
+    if (now > next) {
+      this.stepStats.overruns++;
+      console.warn(`[room ${this.id}] tick overran by ${now - next}ms`);
+    }
     this.scheduleTick(Math.max(next, now));
   }
 
@@ -468,10 +499,23 @@ export class GameRoom {
 
     this.broadcast({ type: "TRIAL_END", trialId: episodeId });
 
+    if (this.trialCount >= this.options.rounds) {
+      // Last round played: the group is finished (no reset needed)
+      this.done = true;
+      this.log.write("room_finished", { rounds: this.trialCount, players: this.seatSummary() });
+      this.onDone();
+      this.broadcastLobbyState();
+      return;
+    }
+
     // Reset now so the next round starts at step 0 (otherwise it ends immediately)
     if (this.envId && !this.disposed) {
-      try { this.resetState = (await envReset(this.envId)).state; }
-      catch (e) { console.error(`[room ${this.id}] reset after trial failed:`, e); }
+      const envId = this.envId;
+      this.resetting = envReset(envId)
+        .then((r) => { this.resetState = r.state; })
+        .catch((e) => { console.error(`[room ${this.id}] reset after trial failed:`, e); })
+        .finally(() => { this.resetting = null; });
+      await this.resetting;
     }
     this.broadcastLobbyState();
   }
@@ -505,6 +549,35 @@ export class GameRoom {
     const envId = this.envId;
     this.disposing = envId ? envClose(envId).then(() => {}, () => {}) : Promise.resolve();
     return this.disposing;
+  }
+
+  /** Current status for the admin view (read-only; no participant data beyond IDs and seats). */
+  snapshot() {
+    const st = this.stepStats;
+    return {
+      id: this.id,
+      options: this.options,
+      status: this.disposed ? "closed" : this.running ? "playing" : this.done ? "finished" : this.starting ? "starting" : this.locked ? "between rounds" : "lobby",
+      createdAt: this.createdAt,
+      capacity: this.capacity,
+      locked: this.locked,
+      trial: this.trialCount,
+      rounds: this.options.rounds,
+      trialsCompleted: this.trialsCompleted,
+      trialStartedAt: this.running ? this.trialStartedAt : null,
+      step: this.running ? this.lastStep : null,
+      horizon: this.spec?.max_steps ?? this.options.horizon,
+      tickMs: TICK_MS,
+      score: this.options.game === "overcooked" ? this.score : null,
+      envReady: this.envId !== null,
+      startRetries: this.startRetries,
+      stepErrorsInARow: this.consecutiveErrors,
+      stepLatencyMs: st.n ? { last: st.last, mean: Math.round(st.sum / st.n), max: st.max } : null,
+      overruns: st.overruns,
+      seats: [...this.seats].map(([pid, s]) => ({
+        participantId: pid, agentId: s.agentId, connected: s.connected, ready: this.readyPlayers.has(pid),
+      })),
+    };
   }
 
   /** The sidecar's state after a step, as the running state players receive. */

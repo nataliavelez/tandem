@@ -8,12 +8,20 @@ Created by: Elizabeth Mieczkowski, Updated: 10/2026
 
 import os, time
 import numpy as np
+import pytest
 import requests
 import jax
 import overcooked_task as oc
 
 BASE = os.environ.get("SIDECAR_URL", "http://127.0.0.1:8001")
 RIGHT, DOWN, LEFT, UP, STAY, INTERACT = range(6)
+CREATED = []  # env ids to close when the tests finish (the sidecar may be a live one)
+
+@pytest.fixture(autouse=True, scope="module")
+def close_envs():
+    yield
+    for env_id in CREATED:
+        requests.post(f"{BASE}/env/close", json={"env_id": env_id})
 
 def post(path, **body):
     return requests.post(f"{BASE}{path}", json=body)
@@ -21,6 +29,7 @@ def post(path, **body):
 def create(N=10, seed=123, horizon=400, layout="open_room"):
     r = post("/env/create", task="overcooked", seed=seed, num_agents=N, episode_horizon=horizon, layout=layout)
     r.raise_for_status()
+    CREATED.append(r.json()["env_id"])
     return r.json()["env_id"]
 
 def agents(N):

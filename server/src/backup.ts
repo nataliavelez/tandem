@@ -51,8 +51,23 @@ class Backup {
   private chains = new Map<string, Promise<boolean>>();
   private timer: NodeJS.Timeout | null = null;
   private failuresInARow = 0;
+  private lastSuccessAt: number | null = null;
+  private lastFailure: { at: number; file: string; error: string } | null = null;
 
   get enabled() { return this.client !== null; }
+
+  /** For the admin view. */
+  status() {
+    return {
+      enabled: this.enabled,
+      target: this.enabled ? `${BUCKET}/${PREFIX}/` : null,
+      intervalMs: INTERVAL_MS,
+      lastSuccessAt: this.lastSuccessAt,
+      lastFailure: this.lastFailure,
+      failuresInARow: this.failuresInARow,
+      filesUploaded: Object.keys(this.uploaded).length,
+    };
+  }
 
   start() {
     if (!BUCKET) {
@@ -129,10 +144,12 @@ class Backup {
       }));
     } catch (e: any) {
       this.failuresInARow++;
+      this.lastFailure = { at: Date.now(), file: name, error: `${e?.name ?? ""} ${e?.message ?? e}`.trim() };
       console.error(`[backup] upload of ${name} failed (${this.failuresInARow} in a row); will retry:`, e?.name ?? "", e?.message ?? e);
       return false;
     }
     this.failuresInARow = 0;
+    this.lastSuccessAt = Date.now();
     this.uploaded[name] = { size: body.length, mtimeMs: st.mtimeMs };
     saveManifest(this.uploaded);
     return true;

@@ -26,10 +26,16 @@ export const DATA_DIR = process.env.DATA_DIR ?? path.resolve(__dirname, "../../d
 const RUN_ID = new Date().toISOString().replace(/[:.]/g, "-");
 
 const closeListeners: Array<(filePath: string) => void> = [];
+const eventListeners: Array<(log: string, event: string, fields: Record<string, unknown>) => void> = [];
 
 /** Called with a log's path once it is closed (complete), e.g. to back it up. */
 export function onLogClosed(fn: (filePath: string) => void) {
   closeListeners.push(fn);
+}
+
+/** Called for every event written to any log except ticks (e.g. the admin view's recent events). */
+export function onLogEvent(fn: (log: string, event: string, fields: Record<string, unknown>) => void) {
+  eventListeners.push(fn);
 }
 
 export class DataLog {
@@ -50,6 +56,11 @@ export class DataLog {
     } catch (e) {
       // Never let a logging failure take down a live session
       console.error(`[datalog ${this.name}] write failed:`, e);
+    }
+    if (event !== "tick") {
+      for (const fn of eventListeners) {
+        try { fn(this.name, event, fields); } catch { /* a listener must never break logging */ }
+      }
     }
   }
 

@@ -1,0 +1,17 @@
+# Tandem sidecar: the JaxMARL game environments (local only: 127.0.0.1:8001).
+# Installed by deploy/setup.sh to /etc/systemd/system/.
+[Unit]
+Description=Tandem sidecar (JaxMARL environments)
+After=network.target
+
+[Service]
+User=tandem
+WorkingDirectory=/opt/tandem/app/sidecar
+Environment=PYTHONNOUSERSITE=1
+Environment=JAX_PLATFORMS=cpu
+ExecStart=/opt/tandem/venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8001
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
