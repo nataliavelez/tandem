@@ -3,7 +3,7 @@ The main FastAPI app for the JaxMARL sidecar server.
 Defines the API endpoints for creating environments, resetting, stepping, 
 and querying state/specifications.
 
-Created by: Elizabeth Mieczkowski, Updated: 09/2025
+Created by: Elizabeth Mieczkowski, Updated: 10/2026
 '''
 
 from fastapi import FastAPI, HTTPException
@@ -12,7 +12,8 @@ import jax
 import jax.numpy as jnp
 
 from schemas import *
-from env_registry import ENVS, build_env, env_spec, to_public_state, EnvHandle
+from env_registry import ENVS, build_env, env_spec, to_public_state, num_actions, obs_lists, EnvHandle
+from overcooked_task import LayoutError
 
 app = FastAPI(title="Tandem JaxMARL Sidecar", version="0.1")
 
@@ -25,18 +26,14 @@ def ensure_env(env_id: str) -> EnvHandle:
 def create(req: CreateReq):
     import uuid
     env_id = f"env_{uuid.uuid4().hex[:6]}"
-    handle = build_env(
-        task=req.task,
-        seed=req.seed,
-        num_agents=req.num_agents,
-        num_landmarks=req.num_landmarks,
-        local_ratio=req.local_ratio,
-        episode_horizon=req.episode_horizon,
-    )
+    try:
+        handle = build_env(req)
+    except LayoutError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     ENVS[env_id] = handle
     return CreateResp(env_id=env_id)
 
-@app.post("/env/spec", response_model=SpecResp)
+@app.post("/env/spec", response_model=SpecResp, response_model_exclude_none=True)
 def spec(req: IdReq):
     h = ensure_env(req.env_id)
     return SpecResp(**env_spec(h))
@@ -48,11 +45,10 @@ def reset(req: ResetReq):
     obs, state = h.reset_fn(key_reset)
     h.state = state
     h.episode_id += 1
-    return {
-        "state": to_public_state(h.env, state, h.episode_label),
-        "obs": {a: [float(x) for x in obs[a]] for a in h.env.agents},
-        "spec": env_spec(h)
-    }
+    out = {"state": to_public_state(h, state), "spec": env_spec(h)}
+    if req.include_obs:
+        out["obs"] = obs_lists(h, obs)
+    return out
 
 @app.post("/env/step")
 def step(req: StepReq):
@@ -65,7 +61,7 @@ def step(req: StepReq):
     if missing or unknown:
         raise HTTPException(status_code=400, detail=f"missing actions for {missing}; unknown agents {unknown}")
     # Validate discrete actions
-    n = int(h.env.action_spaces[h.env.agents[0]].n)
+    n = num_actions(h)
     for a, idx in req.actions.items():
         if not (0 <= idx < n):
             raise HTTPException(status_code=400, detail=f"action out of range for {a}: {idx}")
@@ -75,20 +71,22 @@ def step(req: StepReq):
     obs, new_state, rewards, dones, info = h.step_fn(key_step, h.state, actions)
     h.state = new_state
     # Format outputs
-    return {
-        "state": to_public_state(h.env, new_state, h.episode_label),
-        "obs": {a: [float(x) for x in obs[a]] for a in h.env.agents},
+    out = {
+        "state": to_public_state(h, new_state),
         "rewards": {a: float(rewards[a]) for a in h.env.agents},
         "dones": {**{a: bool(dones[a]) for a in h.env.agents}, "__all__": bool(dones["__all__"])},
         "info": jax.tree_util.tree_map(lambda x: jnp.asarray(x).tolist(), info),
     }
+    if req.include_obs:
+        out["obs"] = obs_lists(h, obs)
+    return out
 
 @app.post("/env/state")
 def get_state(req: IdReq):
     h = ensure_env(req.env_id)
     if h.state is None:
         raise HTTPException(status_code=400, detail="env not reset")
-    return {"state": to_public_state(h.env, h.state, h.episode_label)}
+    return {"state": to_public_state(h, h.state)}
 
 @app.post("/env/close")
 def close(req: IdReq):

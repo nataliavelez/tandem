@@ -1,7 +1,8 @@
 {/*
-Per-study settings: what the study and condition are called, how seeds are
-assigned, group size limits, and who gets paid when the study ends early. Values come from the study's settings file (see loadEnv.ts
-and studies/example.env).
+Per-study settings: what the study and condition are called, which game is
+played (and on which layout), how seeds are assigned, group size limits, and
+who gets paid when the study ends early. Values come from the study's settings
+file (see loadEnv.ts and studies/example.env).
 
 Payment rules (each can be changed per study):
   aborted  (our side: server stopped/crashed, environment failure, or the group
@@ -20,7 +21,7 @@ Created by: Elizabeth Mieczkowski, Updated: 10/2026
 */}
 import { execFileSync } from "child_process";
 import path from "path";
-import type { EndInfo, EndOutcome } from "../../shared/types";
+import type { EndInfo, EndOutcome, GameName } from "../../shared/types";
 
 function envBool(name: string, fallback: boolean): boolean {
   const v = process.env[name];
@@ -31,6 +32,16 @@ function envBool(name: string, fallback: boolean): boolean {
 function envUrl(name: string): string | null {
   return process.env[name]?.trim() || null;
 }
+
+const GAMES: GameName[] = ["mpe", "overcooked"];
+const game = (process.env.GAME?.trim() || "mpe") as GameName;
+if (!GAMES.includes(game)) {
+  // Running a study with the wrong game is worse than not starting
+  console.error(`[config] GAME must be one of ${GAMES.join(", ")} (got "${process.env.GAME}")`);
+  process.exit(1);
+}
+/** Overcooked layout: sidecar/layouts/<LAYOUT>.txt (it must have at least REQUIRED_PLAYERS spawns) */
+const layout = game === "overcooked" ? (process.env.LAYOUT?.trim() || "open_room") : null;
 
 const playersPerRoom = Number(process.env.REQUIRED_PLAYERS ?? 2);
 const seed = Number(process.env.SEED ?? 123);
@@ -57,6 +68,8 @@ export const studyConfig = {
   condition: process.env.CONDITION?.trim() || null,
   configFile: process.env.STUDY_CONFIG ?? null,
   code: codeVersion(),
+  game,
+  layout,
   /**
    * Environment seed for a room. Default: every room uses SEED, so every group
    * plays the same sequence of starting layouts. SEED_PER_ROOM=true gives
@@ -80,9 +93,9 @@ export const studyConfig = {
 
 /** What a data log records about the study this server is running. */
 export function studyInfo() {
-  const { studyName, condition, configFile, code, seed, seedPerRoom, playersPerRoom, minGroupSize, payment } = studyConfig;
+  const { studyName, condition, configFile, code, game, layout, seed, seedPerRoom, playersPerRoom, minGroupSize, payment } = studyConfig;
   return {
-    studyName, condition, configFile, code, seed, seedPerRoom, playersPerRoom, minGroupSize,
+    studyName, condition, configFile, code, game, layout, seed, seedPerRoom, playersPerRoom, minGroupSize,
     paid: { aborted: payment.aborted.paid, dropped: payment.dropped.paid },
   };
 }
@@ -112,7 +125,7 @@ export function checkStudyConfig() {
   }
   if (studyConfig.code.dirty) console.warn("[config] running with uncommitted code changes (logged as code.dirty=true).");
   console.log(`[config] study ${studyConfig.studyName ?? "(unnamed)"} / condition ${studyConfig.condition ?? "(none)"}; ` +
-    `seed ${seed}${seedPerRoom ? " + room number" : " (same for every room)"}`);
+    `game ${game}${layout ? ` (layout ${layout})` : ""}; seed ${seed}${seedPerRoom ? " + room number" : " (same for every room)"}`);
   console.log(`[config] group size ${playersPerRoom} (abort below ${minGroupSize}); ` +
     `pay aborted=${payment.aborted.paid}, dropped=${payment.dropped.paid}`);
 }

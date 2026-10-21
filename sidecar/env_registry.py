@@ -1,7 +1,11 @@
 '''
 Keep track of active environments and wrap JaxMARL. 
 
-Created by: Elizabeth Mieczkowski, Updated: 09/2025
+Tasks: "simple_spread" (MPE) and "overcooked" (classic onion soup on the
+OvercookedV2 engine, 1-10 agents; see overcooked_task.py). Each env handle
+knows its task, so spec / public state / action checks dispatch on it.
+
+Created by: Elizabeth Mieczkowski, Updated: 10/2026
 '''
 
 import hashlib
@@ -9,20 +13,25 @@ import subprocess
 import threading
 from importlib import metadata
 from pathlib import Path
+import numpy as np
 import jax
 import jax.numpy as jnp
 from typing import Dict, Any
 from jaxmarl.environments.mpe.simple_spread import SimpleSpreadMPE
 from jaxmarl.environments.mpe.default_params import DISCRETE_ACT
 import jaxmarl
+import overcooked_task
 
 def spec_hash(spec: Dict[str, Any]) -> str:
     s = "|".join(f"{k}={spec[k]}" for k in sorted(spec.keys()))
     return hashlib.sha1(s.encode()).hexdigest()[:12]
 
 class EnvHandle:
-    def __init__(self, env, reset_fn, step_fn, key, seed, episode_horizon):
+    def __init__(self, task, env, reset_fn, step_fn, key, seed, episode_horizon, extra=None):
+        self.task = task
         self.env = env
+        # Task-specific build info (overcooked: layout name and rows)
+        self.extra = extra or {}
         self.key = key
         self.seed = seed
         self.state = None
@@ -44,30 +53,50 @@ ENVS: Dict[str, EnvHandle] = {}
 _COMPILED: Dict[tuple, tuple] = {}
 _COMPILE_LOCK = threading.Lock()
 
-def _compiled(num_agents: int, num_landmarks: int, local_ratio: float, episode_horizon: int):
-    cfg = ("simple_spread", num_agents, num_landmarks, local_ratio, episode_horizon)
+def _compiled(cfg: tuple, make_env):
+    """Env + jitted reset/step for a config key, built (and compiled) once."""
     with _COMPILE_LOCK:  # two rooms with a new config compile it once
         if cfg not in _COMPILED:
-            env = SimpleSpreadMPE(
-                num_agents=num_agents,
-                num_landmarks=num_landmarks,
-                local_ratio=local_ratio,
-                action_type=DISCRETE_ACT,
-                max_steps=episode_horizon,
-            )
+            env = make_env()
             compiled = (env, jax.jit(env.reset), jax.jit(env.step_env))
             warm_up(*compiled)
             _COMPILED[cfg] = compiled
         return _COMPILED[cfg]
 
-def build_env(task: str, seed: int, num_agents: int, num_landmarks: int,
-              local_ratio: float, episode_horizon: int):
-    
-    assert task == "simple_spread" # only task supported for now
+def build_env(req) -> EnvHandle:
+    """req: a CreateReq. Raises overcooked_task.LayoutError for an unusable layout/group size."""
+    if req.task == "simple_spread":
+        cfg = ("simple_spread", req.num_agents, req.num_landmarks, req.local_ratio, req.episode_horizon)
+        make = lambda: SimpleSpreadMPE(
+            num_agents=req.num_agents,
+            num_landmarks=req.num_landmarks,
+            local_ratio=req.local_ratio,
+            action_type=DISCRETE_ACT,
+            max_steps=req.episode_horizon,
+        )
+        extra = {}
+    elif req.task == "overcooked":
+        layout, rows = overcooked_task.load_layout(req.layout, req.num_agents)
+        # The layout's contents are part of the key, so editing a layout file recompiles
+        cfg = ("overcooked", req.layout, tuple(rows), req.num_agents, req.episode_horizon)
+        make = lambda: overcooked_task.make_env(layout, req.episode_horizon)
+        extra = {"layout": req.layout, "rows": rows}
+    else:
+        raise ValueError(f"unknown task {req.task!r}")
 
-    env, reset_fn, step_fn = _compiled(num_agents, num_landmarks, local_ratio, episode_horizon)
-    return EnvHandle(env=env, reset_fn=reset_fn, step_fn=step_fn,
-                     key=jax.random.PRNGKey(seed), seed=seed, episode_horizon=episode_horizon)
+    env, reset_fn, step_fn = _compiled(cfg, make)
+    return EnvHandle(task=req.task, env=env, reset_fn=reset_fn, step_fn=step_fn,
+                     key=jax.random.PRNGKey(req.seed), seed=req.seed,
+                     episode_horizon=req.episode_horizon, extra=extra)
+
+def num_actions(h: EnvHandle) -> int:
+    # OvercookedV2 has no action_spaces dict, only action_space()
+    return int(h.env.action_space(h.env.agents[0]).n)
+
+def obs_lists(h: EnvHandle, obs) -> Dict[str, list]:
+    """Observations flattened per agent (overcooked obs are H x W x C; shape is in the spec)."""
+    host = jax.device_get(obs)
+    return {a: [float(x) for x in np.asarray(host[a]).reshape(-1)] for a in h.env.agents}
 
 def warm_up(env, reset_fn, step_fn):
     # Compile reset/step now (on a throwaway key) so the first live ticks aren't slow.
@@ -75,7 +104,7 @@ def warm_up(env, reset_fn, step_fn):
     # reset returns, so jit compiles a second version on the 2nd step.
     k = jax.random.PRNGKey(0)
     _, state = reset_fn(k)
-    noop = {a: jnp.int32(0) for a in env.agents}
+    noop = {a: jnp.int32(0) for a in env.agents}  # any action compiles the same function
     for _ in range(2):
         _, state, *_ = jax.block_until_ready(step_fn(k, state, noop))
 
@@ -101,6 +130,8 @@ VERSIONS = {
 }
 
 def env_spec(h: EnvHandle) -> Dict[str, Any]:
+    if h.task == "overcooked":
+        return overcooked_spec(h)
     env = h.env
     # For SimpleSpread: obs_dim = 4 + (N-1)*4 + (L*2)
     obs_shape = list(env.observation_spaces[env.agents[0]].shape)
@@ -117,8 +148,9 @@ def env_spec(h: EnvHandle) -> Dict[str, Any]:
         max_steps=int(env.max_steps),
     )
     return dict(
+        game="mpe",
         observation_shape=obs_shape,
-        action_space={"type": "discrete", "n": n_actions, "labels": labels},
+        action_space={"type": "discrete", "n": n_actions, "labels": labels, "noop": 0},
         dt=spec["dt"],
         seed=h.seed,
         max_steps=spec["max_steps"],
@@ -127,7 +159,20 @@ def env_spec(h: EnvHandle) -> Dict[str, Any]:
         versions=VERSIONS,
     )
 
-def to_public_state(env: SimpleSpreadMPE, state, episode_label: str) -> Dict[str, Any]:
+def overcooked_spec(h: EnvHandle) -> Dict[str, Any]:
+    fields = overcooked_task.spec_fields(h.env, h.extra["layout"], h.extra["rows"])
+    # Identifies the game config (not the seed): same layout/group/horizon = same hash
+    hashed = {k: fields[k] for k in ("engine", "max_steps", "num_agents", "recipes", "start_cooking_interaction")}
+    hashed["layout_rows"] = "/".join(fields["layout"]["rows"])
+    hashed["spawns"] = fields["layout"]["spawns"]
+    return dict(**fields, seed=h.seed, spec_hash=f"overcooked:{spec_hash(hashed)}", versions=VERSIONS)
+
+def to_public_state(h: EnvHandle, state) -> Dict[str, Any]:
+    if h.task == "overcooked":
+        return overcooked_task.to_public_state(h.env, state, h.episode_label)
+    return mpe_public_state(h.env, state, h.episode_label)
+
+def mpe_public_state(env: SimpleSpreadMPE, state, episode_label: str) -> Dict[str, Any]:
     # positions in [-1,1], velocities shown for agents only
     agents = {}
     for i, a in enumerate(env.agents):

@@ -1,0 +1,16 @@
+# open_room: an open kitchen for 1-10 cooks. 4 pots (top/bottom), 4 onion
+# piles (corners), 2 plate piles, 2 delivery points; 180-degree symmetric.
+#
+# Layout file format (lines starting with # are ignored; all rows must have
+# the same length and the outer border must not be floor):
+#   W counter   P pot   O onion pile   B plate pile   X delivery   ' ' floor
+#   a-j spawn points, filled in letter order: a group of N cooks starts on
+#       the first N letters, so place them so every prefix is spread out.
+WWWPWWWPWWW
+O         O
+W a  e  c W
+B   g h   X
+X   i j   B
+W d  f  b W
+O         O
+WWWPWWWPWWW

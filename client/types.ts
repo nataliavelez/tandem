@@ -6,7 +6,7 @@ export type TrialType =
   | "quiz"
   | "waiting-room"
   | "chat"
-  | "mpe"
+  | "game"
   | "survey"; 
 
 interface BaseTrialConfig {
@@ -46,7 +46,8 @@ export interface QuizTrialConfig extends BaseTrialConfig {
 
 export interface WaitingTrialConfig extends BaseTrialConfig {
   type: "waiting-room";
-  maxParticipants: number;
+  /** Fallback only: the group size comes from the server (REQUIRED_PLAYERS) */
+  maxParticipants?: number;
 }
 
 export interface ChatTrialConfig extends BaseTrialConfig {
@@ -55,8 +56,9 @@ export interface ChatTrialConfig extends BaseTrialConfig {
   duration: number; 
 }
 
-export interface MpeTrialConfig extends BaseTrialConfig {
-  type: "mpe";
+/** One round of the multiplayer game. Which game (MPE / Overcooked) is the server's GAME setting. */
+export interface GameTrialConfig extends BaseTrialConfig {
+  type: "game";
   round: number;
   horizon?: number; 
   tickMs?: number;  
@@ -74,7 +76,7 @@ export type TrialConfig =
   | QuizTrialConfig
   | WaitingTrialConfig
   | ChatTrialConfig
-  | MpeTrialConfig
+  | GameTrialConfig
   | SurveyTrialConfig;
 
 export type TrialTimeline = TrialConfig[];

@@ -9,13 +9,16 @@
     "test:reconnect": "node test/reconnect.js",
     "test:groupsize": "node test/groupsize.js",
     "test:datalog": "node test/datalog.js",
-    "test:all": "node test/bots.js && node test/reconnect.js && node test/groupsize.js && node test/datalog.js"
+    "test:backup": "node test/backup.js",
+    "test:overcooked": "node test/overcooked.js",
+    "test:all": "node test/bots.js && node test/reconnect.js && node test/groupsize.js && node test/datalog.js && node test/overcooked.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1145.0",
     "ws": "^8.18.2"
   },
   "devDependencies": {

@@ -21,6 +21,8 @@ def test_spec_and_reset():
     assert spec["observation_shape"][0] == 4 + (3-1)*4 + (3*2)  # 14
     r = requests.post(f"{BASE}/env/reset", json={"env_id":env}).json()
     assert r["state"]["step"] == 0
+    assert "obs" not in r  # only on request
+    r = requests.post(f"{BASE}/env/reset", json={"env_id":env, "include_obs": True}).json()
     assert set(r["obs"].keys()) == {f"agent_{i}" for i in range(3)}
 
 def test_invalid_action_rejected():

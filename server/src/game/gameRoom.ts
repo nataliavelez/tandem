@@ -1,5 +1,7 @@
 {/*
-MPE game lifecycle and sidecar interaction for ONE room (one group of players).
+Game lifecycle and sidecar interaction for ONE room (one group of players).
+Runs either game (options.game): MPE simple_spread or Overcooked (classic
+onion soup, 1-10 cooks); the sidecar does the game-specific work.
 
 - Owns agent seats (agent_0..agent_{N-1}); the server, not the client, decides
   which agent a player controls.
@@ -7,6 +9,11 @@ MPE game lifecycle and sidecar interaction for ONE room (one group of players).
 - Runs a serialized tick loop (next step is scheduled only after the previous
   sidecar call returns, so steps can never overlap or arrive out of order).
 - Resets the env after each trial so the next round starts from step 0.
+- Actions: MPE applies each player's latest held action every tick.
+  Overcooked is strictly one step per key press: presses are queued per
+  player (up to MAX_QUEUED_PRESSES) and one is applied per tick; with no press
+  the agent stays. Idle/disconnected agents get the spec's noop (MPE noop,
+  Overcooked stay) and, in Overcooked, stay on the grid.
 - Holds a disconnected player's seat (markDisconnected) so they can come back
   (reattach); the RoomManager decides how long to hold it.
 - Writes every event and tick to a per-room JSONL data log (DataLog),
@@ -31,6 +38,7 @@ import type {
   RunningState,
   PlayerID,
   RoomID,
+  GameName,
 } from "../../../shared/types";
 
 const TICK_MS = Number(process.env.TICK_MS ?? 100);
@@ -38,13 +46,18 @@ const MAX_CONSECUTIVE_STEP_ERRORS = 20;
 // Wait between attempts when the sidecar is unavailable; give up (abort) after ~2 min
 const START_RETRY_MS = Number(process.env.START_RETRY_MS ?? 3000);
 const MAX_START_RETRIES = Number(process.env.MAX_START_RETRIES ?? 40);
-const NOOP = 0;
+/** Overcooked: key presses waiting to be applied, per player; extra presses are dropped. */
+const MAX_QUEUED_PRESSES = 2;
 
-export type MpeRoomOptions = {
+export type GameRoomOptions = {
+  game: GameName;
   seed: number;
   num_agents: number;
-  num_landmarks: number;
   horizon: number;
+  /** MPE only */
+  num_landmarks?: number;
+  /** Overcooked only: sidecar/layouts/<layout>.txt */
+  layout?: string;
 };
 
 type Seat = {
@@ -58,32 +71,33 @@ const DISCONNECTED_SEND = () => {};
 
 type TrialStartMsg = Extract<ServerEvent, { type: "TRIAL_START" }>;
 
-/** Env state as the sidecar returns it (agents, landmarks, step, episodeId). */
-type SidecarState = Omit<RunningState, "phase">;
+/** Env state as the sidecar returns it (the running state minus phase/game/score). */
+type SidecarState = Record<string, unknown> & {
+  agents: Record<AgentID, { isHuman: boolean }>;
+  step: number;
+  episodeId: string;
+};
 
-function createParams(options: MpeRoomOptions) {
-  return {
-    task: "simple_spread" as const,
-    seed: options.seed,
-    num_agents: options.num_agents,
-    num_landmarks: options.num_landmarks,
-    episode_horizon: options.horizon,
-    action_type: "DISCRETE_ACT" as const,
-  };
+function createParams(options: GameRoomOptions) {
+  const base = { seed: options.seed, num_agents: options.num_agents, episode_horizon: options.horizon };
+  if (options.game === "overcooked") {
+    return { ...base, task: "overcooked" as const, layout: options.layout ?? "open_room" };
+  }
+  return { ...base, task: "simple_spread" as const, num_landmarks: options.num_landmarks ?? 3, action_type: "DISCRETE_ACT" as const };
 }
 
 /**
  * Have the sidecar compile this game config before anyone arrives (it compiles
  * once per config; doing it mid-study would stall rooms already playing).
  */
-export async function warmSidecar(options: MpeRoomOptions) {
+export async function warmSidecar(options: GameRoomOptions) {
   const { env_id } = await envCreate(createParams(options));
   await envClose(env_id);
 }
 
-export class MpeRoom {
+export class GameRoom {
   readonly id: RoomID;
-  readonly options: MpeRoomOptions;
+  readonly options: GameRoomOptions;
   envId: string | null = null;
   spec: TrialSpec | null = null;
 
@@ -92,7 +106,12 @@ export class MpeRoom {
 
   private seats = new Map<PlayerID, Seat>();
   private readyPlayers = new Set<PlayerID>();
+  /** MPE: each agent's latest held action */
   private lastActions = new Map<AgentID, number>();
+  /** Overcooked: each agent's key presses not yet applied (one per tick) */
+  private pressQueues = new Map<AgentID, number[]>();
+  /** Team score this trial (Overcooked: sum of the shared delivery rewards) */
+  private score = 0;
 
   private loopTimer: NodeJS.Timeout | null = null;
   private running = false;
@@ -114,7 +133,7 @@ export class MpeRoom {
 
   constructor(
     id: RoomID,
-    options: MpeRoomOptions,
+    options: GameRoomOptions,
     /** Called after abort() has notified players; the manager frees the room. */
     private onAbort: (reason: string) => void = () => {},
   ) {
@@ -138,6 +157,10 @@ export class MpeRoom {
   playerIds(): PlayerID[] { return [...this.seats.keys()]; }
   /** Can a new player be placed here? */
   get isOpen() { return !this.locked && !this.disposed && this.seats.size < this.capacity; }
+  /** One key press = one action (Overcooked), vs. the held action every tick (MPE). */
+  private get pressModel() { return this.options.game === "overcooked"; }
+  /** The do-nothing action (from the spec: MPE 0 = noop, Overcooked 4 = stay). */
+  private get noop() { return this.spec?.action_space.noop ?? 0; }
 
   hasPlayer(playerId: PlayerID) { return this.seats.has(playerId); }
   agentFor(playerId: PlayerID): AgentID | null { return this.seats.get(playerId)?.agentId ?? null; }
@@ -174,7 +197,7 @@ export class MpeRoom {
     this.seats.delete(playerId);
     this.readyPlayers.delete(playerId);
     // A departed player's agent must not keep executing their last held key
-    this.lastActions.set(seat.agentId, NOOP);
+    this.clearActions(seat.agentId);
     this.log.write(`player_${reason}`, { participantId: playerId, agentId: seat.agentId, trial: this.trialCount, running: this.running });
     this.broadcastLobbyState();
   }
@@ -187,7 +210,7 @@ export class MpeRoom {
     seat.send = DISCONNECTED_SEND;
     // Must re-confirm readiness on return (the room shouldn't start without them)
     this.readyPlayers.delete(playerId);
-    this.lastActions.set(seat.agentId, NOOP);
+    this.clearActions(seat.agentId);
     this.log.write("player_disconnected", { participantId: playerId, agentId: seat.agentId, trial: this.trialCount, running: this.running });
     this.broadcastLobbyState();
   }
@@ -229,7 +252,29 @@ export class MpeRoom {
     if (!seat || !this.running) return;
     const n = this.spec?.action_space.n ?? 0;
     if (typeof action !== "number" || !Number.isInteger(action) || action < 0 || action >= n) return;
-    this.lastActions.set(seat.agentId, action);
+    if (this.pressModel) {
+      const queue = this.pressQueues.get(seat.agentId) ?? [];
+      if (queue.length < MAX_QUEUED_PRESSES) queue.push(action);
+      this.pressQueues.set(seat.agentId, queue);
+    } else {
+      this.lastActions.set(seat.agentId, action);
+    }
+  }
+
+  /** The action an agent takes this tick (next queued press / held action, else noop). */
+  private nextAction(agentId: AgentID): number {
+    if (this.pressModel) return this.pressQueues.get(agentId)?.shift() ?? this.noop;
+    return this.lastActions.get(agentId) ?? this.noop;
+  }
+
+  private clearActions(agentId?: AgentID) {
+    if (agentId) {
+      this.lastActions.delete(agentId);
+      this.pressQueues.delete(agentId);
+    } else {
+      this.lastActions.clear();
+      this.pressQueues.clear();
+    }
   }
 
   // ----- Env / trial lifecycle -----
@@ -304,12 +349,14 @@ export class MpeRoom {
     this.locked = true;
     this.readyPlayers.clear();
     this.trialCount++;
-    this.lastActions.clear();
+    this.clearActions();
+    this.score = 0;
 
     const startMsg: TrialStartMsg = {
       type: "TRIAL_START",
       startTimestamp: Date.now(),
       duration: this.options.horizon * TICK_MS,
+      tickMs: TICK_MS,
       spec: this.spec,
     };
     this.currentTrialStart = startMsg;
@@ -346,7 +393,7 @@ export class MpeRoom {
       const actions: Record<string, number> = {};
       for (let i = 0; i < this.capacity; i++) {
         const a = `agent_${i}` as AgentID;
-        actions[a] = this.lastActions.get(a) ?? NOOP;
+        actions[a] = this.nextAction(a);
       }
 
       const stepStart = Date.now();
@@ -355,19 +402,7 @@ export class MpeRoom {
       this.consecutiveErrors = 0;
       if (!this.running) return; // trial stopped while the step was in flight
 
-      const running: RunningState = {
-        phase: "running",
-        agents: this.withHumans(stepResp.state.agents),
-        landmarks: stepResp.state.landmarks as RunningState["landmarks"],
-        step: stepResp.state.step,
-        episodeId: stepResp.state.episodeId,
-      };
-      if (stepResp.rewards) {
-        for (const [aid, r] of Object.entries(stepResp.rewards)) {
-          const agentId = aid as AgentID;
-          if (running.agents[agentId]) running.agents[agentId].reward = r as number;
-        }
-      }
+      const running = this.toRunning(stepResp.state as SidecarState, stepResp.rewards ?? {});
 
       const serverTime = Date.now();
       this.broadcast({
@@ -378,8 +413,11 @@ export class MpeRoom {
       });
 
       // One line per tick: what every agent did and where everything ended up
+      // (MPE: agents, landmarks; Overcooked: agents, items, recipe,
+      // newCorrectDelivery, score -- enough to rebuild the exact env state)
       const connected: Record<string, boolean> = {};
       for (const seat of this.seats.values()) connected[seat.agentId] = seat.connected;
+      const { phase: _phase, game: _game, step: _step, episodeId: _ep, ...gameState } = running;
       this.log.write("tick", {
         trial: this.trialCount,
         episodeId: running.episodeId,
@@ -388,9 +426,9 @@ export class MpeRoom {
         stepLatencyMs,
         actions,
         connected,          // agents with no seat (player left) are absent
-        agents: running.agents,
-        landmarks: running.landmarks,
+        ...gameState,
         rewards: stepResp.rewards ?? null,
+        ...(stepResp.info?.shaped_reward ? { shapedRewards: stepResp.info.shaped_reward } : {}),
       });
 
       const limit = this.spec.max_steps ?? this.options.horizon;
@@ -425,7 +463,7 @@ export class MpeRoom {
     this.running = false;
     this.currentTrialStart = null;
     if (this.loopTimer) { clearTimeout(this.loopTimer); this.loopTimer = null; }
-    this.lastActions.clear();
+    this.clearActions();
     this.log.write("trial_end", { trial: this.trialCount, episodeId, reason, players: this.seatSummary() });
 
     this.broadcast({ type: "TRIAL_END", trialId: episodeId });
@@ -469,11 +507,26 @@ export class MpeRoom {
     return this.disposing;
   }
 
+  /** The sidecar's state after a step, as the running state players receive. */
+  private toRunning(state: SidecarState, rewards: Record<string, number>): RunningState {
+    const agents = this.withHumans(state.agents);
+    if (this.options.game === "overcooked") {
+      // The delivery reward is shared (every agent gets it), so count it once
+      this.score += rewards["agent_0"] ?? 0;
+      return { ...state, phase: "running", game: "overcooked", agents, score: this.score } as unknown as RunningState;
+    }
+    for (const [aid, r] of Object.entries(rewards)) {
+      const a = agents[aid as AgentID] as { reward?: number } | undefined;
+      if (a) a.reward = r;
+    }
+    return { phase: "running", game: "mpe", agents, landmarks: state.landmarks, step: state.step, episodeId: state.episodeId } as RunningState;
+  }
+
   /** Mark each agent human-controlled iff a participant holds its seat. */
-  private withHumans(agents: RunningState["agents"]): RunningState["agents"] {
+  private withHumans<A extends { isHuman: boolean }>(agents: Record<AgentID, A>): Record<AgentID, A> {
     const seated = new Set([...this.seats.values()].map((s) => s.agentId));
-    const out = {} as RunningState["agents"];
-    for (const [aid, a] of Object.entries(agents) as [AgentID, RunningState["agents"][AgentID]][]) {
+    const out = {} as Record<AgentID, A>;
+    for (const [aid, a] of Object.entries(agents) as [AgentID, A][]) {
       out[aid] = { ...a, isHuman: seated.has(aid) };
     }
     return out;

@@ -48,7 +48,7 @@ export function MpeCanvas({ state, width = 600, height = 600 }: Props) {
     ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
 
     // Only draw scene when running
-    if (!state || state.phase !== "running") return;
+    if (!state || state.phase !== "running" || state.game !== "mpe") return;
 
     // Draw landmarks
     ctx.fillStyle = "#9CA3AF";

@@ -25,7 +25,10 @@ Outputs:
 - Seated players also get ABORT_POLICY (paid? where to go?) in case the server
   later disappears without warning
 - Startup: asks the sidecar to compile the game once (warmSidecar), so the
-  first rooms don't stall each other while compiling
+  first rooms don't stall each other while compiling. If the sidecar rejects
+  the game settings (e.g. a layout with fewer spawns than REQUIRED_PLAYERS),
+  the server exits instead of running a study that can't start. Also starts
+  the off-server data backup (backup.ts), which gets a final upload on shutdown
 
 Settings: see loadEnv.ts / studies/example.env.
 
@@ -36,8 +39,10 @@ import "./loadEnv"; // must be first: other modules read process.env on load
 import { WebSocketServer, WebSocket } from "ws";
 import type { ClientEvent, ServerEvent, PlayerID } from "../../shared/types";
 import { RoomManager } from "./game/roomManager";
-import { warmSidecar, type MpeRoomOptions } from "./game/mpeRoom";
+import { warmSidecar, type GameRoomOptions } from "./game/gameRoom";
+import { SidecarError } from "./game/sidecarClient";
 import { DataLog } from "./game/dataLog";
+import { backup } from "./backup";
 import { studyConfig, studyInfo, endInfo, unseatedEndInfo, checkStudyConfig } from "./studyConfig";
 
 const PORT = Number(process.env.PORT ?? 8080);
@@ -51,11 +56,12 @@ const MAX_LOG_DATA_BYTES = 32_768;
 
 const wss = new WebSocketServer({ port: PORT });
 
-const roomOptions = (roomNum: number): MpeRoomOptions => ({
+const roomOptions = (roomNum: number): GameRoomOptions => ({
+  game: studyConfig.game,
   seed: studyConfig.seedFor(roomNum),
   num_agents: PLAYERS_PER_ROOM,
-  num_landmarks: 3,
   horizon: HORIZON,
+  ...(studyConfig.game === "overcooked" ? { layout: studyConfig.layout! } : { num_landmarks: 3 }),
 });
 const rooms = new RoomManager(roomOptions);
 
@@ -254,14 +260,15 @@ async function shutdown(signal: string) {
   console.log(`[orchestrator] ${signal}: ending the study for all participants`);
   wss.close(); // stop accepting connections
 
-  // Exit even if something below hangs
-  setTimeout(() => process.exit(0), 5000).unref();
+  // Exit even if something below hangs (leaves time for the final backup)
+  setTimeout(() => process.exit(0), 10_000).unref();
 
   const reason = "The study server was stopped.";
   const seated = rooms.seatedPlayers();
   await rooms.abortAll(reason);
   participantsLog.write("server_stopped", { signal });
   participantsLog.close();
+  await backup.flush(6000);
   for (const [pid, ws] of sessions) {
     if (!seated.has(pid)) send(ws, { type: "SESSION_STATUS", status: "ended", ...unseatedEndInfo(reason) });
     ws.close(1001, "server shutting down"); // close handshake flushes queued messages
@@ -274,6 +281,7 @@ process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
 checkStudyConfig();
+backup.start();
 
 // Compile the game in the sidecar now, not when the first room opens. Retries
 // while the sidecar is still starting; rooms work without it, just slower to open.
@@ -284,10 +292,14 @@ void (async () => {
       await warmSidecar(roomOptions(1));
       console.log(`[orchestrator] sidecar warmed up in ${Date.now() - t}ms`);
       return;
-    } catch {
+    } catch (e) {
+      if (e instanceof SidecarError && e.status >= 400 && e.status < 500) {
+        console.error(`[orchestrator] the sidecar rejected this study's game settings: ${e.message}`);
+        process.exit(1);
+      }
       await new Promise((r) => setTimeout(r, 3000));
     }
   }
   console.warn("[orchestrator] could not warm up the sidecar; the first room will compile the game");
 })();
-console.log(`WS orchestrator listening on ws://127.0.0.1:${PORT} (${PLAYERS_PER_ROOM} players/room)`);
+console.log(`WS orchestrator listening on ws://127.0.0.1:${PORT} (${studyConfig.game}, ${PLAYERS_PER_ROOM} players/room)`);

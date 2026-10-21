@@ -2,6 +2,8 @@
 Lobby screen so players can join lobby, wait for room to fill, and start game.
 
 Inputs (props): { config: { maxParticipants?: number }, onRoomAssigned(roomId) }
+The group size shown and waited for is the server's (lobby maxParticipants);
+config.maxParticipants is only a fallback.
 
 Outputs:
 - On socket open, sends JOIN_LOBBY
@@ -24,6 +26,7 @@ export function WaitingRoom({ config, onRoomAssigned }: Props) {
   const { socket, addMessageListener, removeMessageListener } = useSocket();
   const [roomId, setRoomId] = useState<string | null>(null);
   const [playerCount, setPlayerCount] = useState<number>(0);
+  const [groupSize, setGroupSize] = useState<number | undefined>(config.maxParticipants);
 
   const sentJoinRef = useRef(false);
   const advancedRef = useRef(false);
@@ -53,9 +56,10 @@ export function WaitingRoom({ config, onRoomAssigned }: Props) {
 
         const count = s.playerCount ?? Object.keys(s.players ?? {}).length;
         setPlayerCount(count);
+        if (s.maxParticipants) setGroupSize(s.maxParticipants);
 
         // auto-signal readiness once when lobby is full
-        const needed = config.maxParticipants ?? count;
+        const needed = s.maxParticipants ?? config.maxParticipants ?? count;
         if (s.roomId && count >= needed && !sentReadyRef.current) {
           socket.send(JSON.stringify({ type: "TRIAL_READY" })); 
           sentReadyRef.current = true;
@@ -101,7 +105,7 @@ export function WaitingRoom({ config, onRoomAssigned }: Props) {
     };
   }, [socket, addMessageListener, removeMessageListener, onRoomAssigned, config.maxParticipants, roomId]);
 
-  const needed = config.maxParticipants ?? undefined;
+  const needed = groupSize;
   const ready = needed ? playerCount >= needed : false;
 
   return (

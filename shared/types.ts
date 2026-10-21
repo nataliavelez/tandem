@@ -3,8 +3,12 @@ export type AgentID = `agent_${number}`;
 export type PlayerID = string;
 export type RoomID = string;
 
+/** Which game a study runs (server GAME setting); tags specs and running states. */
+export type GameName = "mpe" | "overcooked";
+
 export type MpeAction = number;
-export type ActionSpace = { type: "discrete"; n: number; labels?: string[] };
+/** noop: index of the do-nothing action (MPE 0 = noop; Overcooked 4 = stay). */
+export type ActionSpace = { type: "discrete"; n: number; labels?: string[]; noop?: number };
 
 export type Phase = "lobby" | "running" | "finished";
 
@@ -26,14 +30,44 @@ export interface LobbyState {
   maxParticipants?: number;
 }
 
-// RUNNING (your previous PublicState contents live here)
-export interface RunningState {
+// RUNNING: the sidecar's public state, tagged with the game
+export interface MpeRunningState {
   phase: "running";
+  game: "mpe";
   agents: Record<AgentID, PublicAgentState>;
   landmarks: Array<{ pos: [number, number]; radius?: number }>;
   step: number;
   episodeId: string;
 }
+
+/** An Overcooked cook. dir indexes OvercookedSpec.directions; inv is an item (see decodeItem). */
+export type OvercookedAgentState = {
+  pos: [number, number];
+  dir: number;
+  inv: number;
+  isHuman: boolean;
+};
+
+/** Something on a non-floor cell: a loose item on a counter, or a pot's contents. timer = cooking time left. */
+export type OvercookedCellItem = { pos: [number, number]; item: number; timer: number };
+
+export interface OvercookedRunningState {
+  phase: "running";
+  game: "overcooked";
+  agents: Record<AgentID, OvercookedAgentState>;
+  /** Only cells holding something (everything else is as in spec.layout) */
+  items: OvercookedCellItem[];
+  /** Current recipe, as an item code (classic: 12 = 3 onions) */
+  recipe: number;
+  /** A correct dish was delivered on this step */
+  newCorrectDelivery: boolean;
+  /** Team score this trial (sum of delivery rewards so far); set by the server */
+  score: number;
+  step: number;
+  episodeId: string;
+}
+
+export type RunningState = MpeRunningState | OvercookedRunningState;
 
 // FINISHED (extend as needed)
 export interface FinishedState {
@@ -44,21 +78,61 @@ export interface FinishedState {
 
 export type PublicState = LobbyState | RunningState | FinishedState;
 
-// -------- Trial spec (unchanged) --------
-export type TrialSpec = {
-  observation_shape: [number];      // e.g., [18] for MPESimple
-  action_space: ActionSpace;        // {type:"discrete", n:5, labels:["noop","left","right","down","up"]}
-  dt: number;
+// -------- Trial spec (from the sidecar; sent in TRIAL_START) --------
+type BaseTrialSpec = {
+  observation_shape: number[];      // MPE: [obs_dim]; Overcooked: [height, width, channels]
+  action_space: ActionSpace;        // e.g. {type:"discrete", n:5, labels:["noop","left","right","down","up"], noop:0}
   seed: number;
   max_steps?: number;
+  /** Identifies the game config (not the seed) */
   spec_hash: string;
   /** Library versions in the sidecar (jax, jaxmarl, jaxmarl git commit) */
   versions?: Record<string, string | null>;
 };
 
+export type MpeTrialSpec = BaseTrialSpec & { game: "mpe"; dt: number };
+
+export type OvercookedLayout = {
+  name: string;
+  width: number;
+  height: number;
+  /** Static grid, one string per row: W counter, P pot, O onion pile, B plate pile, X delivery, ' ' floor */
+  rows: string[];
+  /** (x, y) of agent_0..agent_{N-1} at reset */
+  spawns: [number, number][];
+};
+
+export type OvercookedTrialSpec = BaseTrialSpec & {
+  game: "overcooked";
+  engine: string;                   // "overcooked_v2"
+  num_agents: number;
+  layout: OvercookedLayout;
+  recipes: number[][];              // ingredient indices; classic: [[0,0,0]]
+  directions: string[];             // agent dir index → "up" | "down" | "right" | "left"
+  pot_cook_time: number;
+  delivery_reward: number;
+  start_cooking_interaction: boolean;
+};
+
+export type TrialSpec = MpeTrialSpec | OvercookedTrialSpec;
+
+/**
+ * Overcooked item codes (JaxMARL OvercookedV2 bitfield): bit 0 plate, bit 1
+ * cooked, then 2 bits per ingredient holding its count (ingredient 0 = onion).
+ * 0 nothing, 1 plate, 4 onion, 12 three onions (in a pot), 14 cooked soup in a
+ * pot, 15 plated soup.
+ */
+export function decodeItem(code: number): { plate: boolean; cooked: boolean; ingredients: number[] } {
+  const ingredients: number[] = [];
+  for (let rest = code >> 2; rest > 0; rest >>= 2) ingredients.push(rest & 0x3);
+  return { plate: (code & 1) !== 0, cooked: (code & 2) !== 0, ingredients };
+}
+
 // -------- Client -> Server --------
 export type MpeClientEvent =
-  // agentId is ignored by the server (it uses the player's assigned seat); kept for client logging
+  // agentId is ignored by the server (it uses the player's assigned seat); kept for client logging.
+  // MPE: the action held right now (sent every tick; the latest one is applied).
+  // Overcooked: one key press = one action (queued; at most one applied per tick).
   | { type: "PLAYER_ACTION"; agentId?: AgentID; action: MpeAction };
 
 // Core client -> server (lobby/session control)
@@ -81,7 +155,7 @@ export type ClientEvent = CoreClientEvent | MpeClientEvent;
 
 // -------- Server -> Client --------
 export type MpeServerEvent =
-  | { type: "TRIAL_START"; startTimestamp: number; duration?: number; spec: TrialSpec }
+  | { type: "TRIAL_START"; startTimestamp: number; duration?: number; tickMs?: number; spec: TrialSpec }
   | { type: "STATE_UPDATE"; state: PublicState; tick: number; serverTime: number };
 
 export type CoreServerEvent =

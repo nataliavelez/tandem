@@ -21,9 +21,16 @@ Created by: Elizabeth Mieczkowski, Updated: 09/2026
 import fs from "fs";
 import path from "path";
 
-const DATA_DIR = process.env.DATA_DIR ?? path.resolve(__dirname, "../../data");
+export const DATA_DIR = process.env.DATA_DIR ?? path.resolve(__dirname, "../../data");
 // One prefix per server run, so restarts never append to an old file
 const RUN_ID = new Date().toISOString().replace(/[:.]/g, "-");
+
+const closeListeners: Array<(filePath: string) => void> = [];
+
+/** Called with a log's path once it is closed (complete), e.g. to back it up. */
+export function onLogClosed(fn: (filePath: string) => void) {
+  closeListeners.push(fn);
+}
 
 export class DataLog {
   readonly filePath: string;
@@ -50,5 +57,6 @@ export class DataLog {
     if (this.fd === null) return;
     try { fs.closeSync(this.fd); } catch {}
     this.fd = null;
+    for (const fn of closeListeners) fn(this.filePath);
   }
 }

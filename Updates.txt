@@ -531,3 +531,217 @@ KNOWN ISSUES (open, additions)
   condition now comes from the server's CONDITION setting.
 - A brand-new config (e.g. a different HORIZON) still compiles once on first
   use; startup warm-up covers only the study's own config.
+
+------------------------------------------------------------
+Session 2026-10-01 (cont.) — Off-server data backup
+------------------------------------------------------------
+
+[feature] Data backup to S3-compatible storage (DigitalOcean Spaces, AWS S3,
+      Backblaze B2, ...). Uploads a log as soon as it closes (room disposed,
+      server stopping), every changed .jsonl in DATA_DIR every
+      BACKUP_INTERVAL_MS (default 5 min; includes logs still being written and
+      leftovers from earlier runs), and a final pass on shutdown (up to 6 s;
+      the forced exit moved from 5 s to 10 s to leave room for it). Whole
+      files go to <bucket>/<BACKUP_PREFIX>/<file> (prefix defaults to
+      STUDY_NAME) with Content-MD5, so the store rejects corrupted uploads.
+      DATA_DIR/.backup-manifest.json (size + mtime per file, written
+      atomically) prevents re-uploading everything after a restart. Uploads
+      of the same file never overlap. Failures are logged and retried on the
+      next pass and never affect sessions. With BACKUP_S3_BUCKET unset, backup
+      is off and the server warns at startup.
+      Settings: BACKUP_S3_BUCKET, BACKUP_S3_ENDPOINT, BACKUP_S3_REGION,
+      BACKUP_PREFIX, BACKUP_INTERVAL_MS, BACKUP_S3_PATH_STYLE, plus
+      AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY. New dependency
+      @aws-sdk/client-s3 (added to both package-lock.json and yarn.lock;
+      additions only).
+      Files: server/src/backup.ts (new), server/src/game/dataLog.ts
+             (DATA_DIR exported, onLogClosed hook), server/src/index.ts,
+             server/studies/example.env, server/package.json,
+             server/package-lock.json, server/yarn.lock
+
+[test] New server/test/backup.js (npm run test:backup; needs an S3 endpoint,
+      so not in test:all). Starts its own servers on :8092 with a temp
+      DATA_DIR. Ran against a local moto S3 emulator: 16/16 pass. Checks:
+      leftover file and participants log uploaded at startup; periodic pass
+      re-uploads the open participants log; closed room log uploaded complete
+      7 ms after the room closed; final upload on SIGTERM identical to the
+      local file; manifest; restart uploads only the new run's file;
+      unreachable store → failures logged and retried, players still seated,
+      shutdown still exits. test:all with backup off: bots, reconnect,
+      groupsize, datalog all pass. Server typecheck clean. Not tried against
+      a real DigitalOcean Spaces or AWS bucket.
+
+------------------------------------------------------------
+Session 2026-10-21 — Overcooked (classic onion soup, 1-10 players): sidecar + server
+------------------------------------------------------------
+
+[feature] Sidecar — New task "overcooked": JaxMARL's OvercookedV2 engine
+      (handles any number of agents; V1 is hardwired to 2) set to classic
+      Overcooked-AI onion soup: one recipe (3 onions), the pot cooks as soon as
+      it is full, full observability. 1-10 agents.
+      Files: sidecar/overcooked_task.py (new), sidecar/env_registry.py,
+             sidecar/app.py, sidecar/schemas.py
+
+[feature] Layouts are text files, sidecar/layouts/<name>.txt (W counter,
+      P pot, O onion pile, B plate pile, X delivery, ' ' floor). Spawns are
+      marked a-j and filled in letter order, so a group of N starts on the
+      first N letters and one layout serves every group size. Checked on load:
+      equal row lengths, known characters only, no floor on the border,
+      consecutive spawn letters, every spawn can reach a pot, onion pile,
+      plate pile and delivery point. Bad name/file or a group bigger than the
+      spawn count → 400. First layout: open_room (11x8; 4 pots, 4 onion piles,
+      2 plate piles, 2 delivery points; 10 spawns).
+      Files: sidecar/layouts/open_room.txt (new), sidecar/overcooked_task.py
+
+[feature] Sidecar spec and state are now tagged with the game ("mpe" |
+      "overcooked") and the action space reports its noop index (MPE 0,
+      Overcooked 4 = stay; action 0 is "right" in Overcooked). Overcooked spec
+      adds the static layout (rows, size, spawns), recipes, direction labels,
+      pot cook time, delivery reward. Overcooked public state: agents
+      (pos, dir, held item), the cells holding something (item code + pot
+      timer), recipe, newCorrectDelivery, step. It is lossless:
+      state_from_public() rebuilds the exact env state, so observations can be
+      recomputed offline. spec_hash covers layout, group size, horizon, recipe.
+      Files: sidecar/overcooked_task.py, sidecar/env_registry.py, sidecar/schemas.py
+
+[bug] Sidecar — reset/step would have crashed for Overcooked: action checks
+      and the spec read env.action_spaces (empty in OvercookedV2), and obs
+      were flattened as 1-D. Action count now comes from env.action_space().
+      Files: sidecar/env_registry.py, sidecar/app.py
+
+[perf] Sidecar — observations are no longer sent on every reset/step (the
+      server never used them; 10 Overcooked agents = ~29k values per step).
+      Pass include_obs=true to get them (flattened; shape in the spec).
+      Files: sidecar/app.py, sidecar/schemas.py
+
+[feature] Server — GAME setting (mpe | overcooked; default mpe) and LAYOUT
+      (Overcooked; default open_room). MpeRoom is now GameRoom (gameRoom.ts)
+      and runs either game. Group size stays REQUIRED_PLAYERS (1-10 for
+      Overcooked) and MIN_GROUP_SIZE still defaults to it. If the sidecar
+      rejects the game settings at startup (e.g. more players than the
+      layout's spawns), the server exits instead of running a study that can't
+      start. room_created.study and the startup log record game and layout.
+      Files: server/src/studyConfig.ts, server/src/index.ts,
+             server/src/game/gameRoom.ts (was mpeRoom.ts),
+             server/src/game/roomManager.ts, server/src/game/sidecarClient.ts,
+             server/studies/example.env
+
+[feature] Server — Overcooked is strictly one step per key press: each
+      PLAYER_ACTION is one press, queued per player (at most 2 waiting; extra
+      presses are dropped) and applied one per tick; with no press the cook
+      stays. MPE keeps applying the latest held action every tick.
+      Idle/disconnected agents now get the spec's noop instead of a hardcoded
+      0 (which would have walked Overcooked cooks right). Dropped players'
+      cooks stay on the grid.
+      Files: server/src/game/gameRoom.ts
+
+[feature] Server — Overcooked running state carries the team score (sum of
+      the shared delivery rewards this trial). TRIAL_START carries tickMs.
+      Overcooked ticks log agents, items, recipe, newCorrectDelivery, score,
+      rewards and shaped rewards (MPE tick lines unchanged).
+      Files: server/src/game/gameRoom.ts, shared/types.ts
+
+[feature] Shared types — RunningState and TrialSpec are unions tagged by
+      game (MpeRunningState / OvercookedRunningState, MpeTrialSpec /
+      OvercookedTrialSpec); ActionSpace.noop; decodeItem() for Overcooked item
+      codes (plate / cooked / onion count). MPE client screens narrow on
+      game === "mpe" (no behavior change).
+      Files: shared/types.ts, client/src/components/trials/MpeTrial.tsx,
+             client/src/components/ui/GameBoard/MPECanvas.tsx
+
+[test] Sidecar: new test_overcooked.py (9 tests): spec; reset puts cooks on
+      spawns in letter order; every group size 1-10 creates/resets/steps;
+      bad layout name/file and too many agents → 400; bad actions → 400; spec
+      hash ignores seed, differs by group size; same config reuses the
+      compiled env; one cook makes and delivers a full soup (reward 20) with
+      the public state rebuilding the exact observations at every step; 10
+      cooks, 150 random steps: never two in a cell or off the floor, same
+      seed + actions = same game, round-trip holds, median step < 20 ms.
+      test_sidecar.py: obs now requested explicitly. 19/19 pass.
+      New server/test/overcooked.js (npm run test:overcooked; starts its own
+      server on :8093, added to test:all), 32 checks: startup refused for 11
+      players on a 10-spawn layout; 10 seated, 11th → new room; spec/state/
+      tickMs; spawns; anti-spoofing; press queue cap; disconnected and idle
+      cooks stay put; one press = one cell, no repeat; a full soup delivered
+      through the server (score 20 for everyone); dropped player's cook stays
+      on the grid, isHuman false; data log (game/layout, initialState, 300
+      sequential ticks with items/recipe/shaped rewards, logged actions =
+      presses, idle = stay, one delivery). ALL PASSED twice.
+      MPE suites unchanged and passing: bots, reconnect, groupsize, datalog
+      (all PASS). Server and client typecheck clean.
+
+KNOWN ISSUES (open, additions)
+- [FIXED below] Overcooked has no client screen yet (next step: canvas,
+  controls, HUD, instructions). The client timeline still has only "mpe" entries.
+- Interacts are resolved in agent order (agent_0 first), as in classic
+  Overcooked; with many cooks agent_0 wins contested counters/pots.
+- Earlier entries give bots.js as 24/24 and groupsize.js as 7/7; the scripts
+  actually print 21 and 9 checks (same on the previous commit).
+- TODO: practice round; multiple recipes; partial observability.
+
+------------------------------------------------------------
+Session 2026-10-21 (cont.) — Overcooked client (MVP, simple shapes)
+------------------------------------------------------------
+
+[feature] Client — Generic game screen: the timeline's "mpe" entry type is
+      now "game", rendered by GameTrial (was MpeTrial), which keeps the ready
+      signal, countdown and listeners and shows the view for the game named
+      in TRIAL_START's spec: MpeView or OvercookedView. The client timeline
+      no longer has to match the server's GAME. MPE's held-key loop now runs
+      at the server's tick (TRIAL_START tickMs) instead of a fixed 100 ms, and
+      MpeView draws with MPECanvas (sharp on high-DPI screens) instead of a
+      duplicate inline canvas.
+      Files: client/types.ts, client/src/components/trials/GameTrial.tsx (new;
+             MpeTrial.tsx removed), client/src/components/trials/MpeView.tsx (new),
+             client/src/components/engine/TrialEngine.tsx,
+             client/src/context/socketContext.ts, client/src/context/SocketProvider.tsx
+
+[feature] Client — Overcooked screen, simple shapes only: counters, pots
+      (onion count, orange cooking ring, green ring when ready), onion crates,
+      plate stacks, SERVE counters, loose items on counters; cooks as colored
+      numbered discs (10 colors) with a facing pointer and their held item as
+      a badge; your cook ringed and labeled YOU; cooks whose player dropped out
+      greyed out. Side panel: team score with a "+20 — soup served!" message,
+      which cook you are, recipe, controls; legend under the kitchen drawn
+      with the same shapes. Fits a 1280x720 screen for open_room.
+      Files: client/src/components/ui/GameBoard/overcookedDraw.ts (new),
+             client/src/components/ui/GameBoard/OvercookedCanvas.tsx (new),
+             client/src/components/trials/OvercookedView.tsx (new)
+
+[feature] Client — Overcooked controls are strictly one action per key press:
+      each keydown sends one PLAYER_ACTION, held keys don't repeat, arrows/
+      space don't scroll the page. Arrows/WASD move (matched by key position,
+      so any keyboard layout works), Space/E interact; action indices come
+      from the spec's labels.
+      Files: client/src/hooks/useKeyPresses.ts (new)
+
+[feature] Client — Instructions screen (was an empty file): paged, Next/Back,
+      blank lines start paragraphs; each page view is logged
+      (instructions_page) for reading times. The timeline now has Overcooked
+      instructions (goal, soup steps, controls) before the waiting room.
+      Files: client/src/components/trials/InstructionsScreen.tsx,
+             client/src/scripts/expTimeline.ts
+
+[bug] Waiting room showed and waited for the client timeline's
+      maxParticipants (2) instead of the server's group size. It now uses the
+      lobby state's maxParticipants (REQUIRED_PLAYERS); the timeline value is
+      only a fallback.
+      Files: client/src/components/trials/WaitingRoom.tsx, client/types.ts
+
+[test] Checked in headless Chrome (puppeteer-core driving the real client,
+      with bots for the other seats; scratch scripts, not in the repo).
+      4 cooks: instructions → lobby → game; key presses pick up an onion and put
+      it in a pot; holding ArrowDown with auto-repeat moved one cell; page did
+      not scroll (page taller than the window); bots filled a pot (cooking
+      ring, then ready ring), carried a plate, left an onion on a counter, and
+      served a soup (score 20, "+20" message shown); light and dark mode.
+      10 cooks: all distinguishable, YOU marker clear. MPE: screen renders,
+      holding → moves the agent. No console errors. Client typecheck and
+      build clean; ESLint clean on new/changed files (WaitingRoom.tsx keeps
+      its 3 earlier lint errors).
+
+KNOWN ISSUES (open, additions)
+- The instructions in expTimeline.ts are for Overcooked; an MPE study needs
+  its own timeline text.
+- Screens other than the game are left-aligned (no global centering), as before.
+- The countdown still uses the client clock against the server's start time.

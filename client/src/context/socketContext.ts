@@ -11,6 +11,8 @@ import type { ServerEvent, TrialSpec, AgentID } from "shared/types";
 export type ActiveTrial = {
   startTimestamp: number;
   duration?: number;
+  /** Server tick length (ms) */
+  tickMs?: number;
   spec: TrialSpec;
 };
 

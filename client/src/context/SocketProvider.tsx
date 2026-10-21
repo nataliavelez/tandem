@@ -36,7 +36,7 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [agentId, setAgentId] = useState<AgentID | null>(null);
   const [trialSpec, setTrialSpec] = useState<TrialSpec | null>(null);
   const [trialStart, setTrialStart] = useState<number | null>(null);
-  // Cached so screens that mount after TRIAL_START (e.g. MpeTrial, which mounts
+  // Cached so screens that mount after TRIAL_START (e.g. GameTrial, which mounts
   // when WaitingRoom advances on TRIAL_START) can still sync their timer.
   const [activeTrial, setActiveTrial] = useState<ActiveTrial | null>(null);
   const [socket, setSocket] = useState<WebSocket | null>(null);
@@ -78,7 +78,7 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       else if (msg.type === "TRIAL_START") {
         setTrialSpec(msg.spec);
         setTrialStart(msg.startTimestamp);
-        setActiveTrial({ startTimestamp: msg.startTimestamp, duration: msg.duration, spec: msg.spec });
+        setActiveTrial({ startTimestamp: msg.startTimestamp, duration: msg.duration, tickMs: msg.tickMs, spec: msg.spec });
       }
       else if (msg.type === "TRIAL_END") setActiveTrial(null);
       else if (msg.type === "LOG_ACK") ackLog(msg.id);

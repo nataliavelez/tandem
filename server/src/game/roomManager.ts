@@ -14,13 +14,13 @@ If not, the seat is freed; for a locked group the participant is also marked
 instead of a new group. If drop-outs leave a locked group below MIN_GROUP_SIZE,
 the study is aborted for everyone still in it.
 
-Aborts: if a room can't continue (MpeRoom.abort) or the server shuts down
+Aborts: if a room can't continue (GameRoom.abort) or the server shuts down
 (abortAll), every participant in it is marked "ended" (aborted, paid per
 PAY_ABORTED), so a reconnect later still lands on the same end screen.
 
 Created by: Elizabeth Mieczkowski, Updated: 10/2026
 */}
-import { MpeRoom, type MpeRoomOptions } from "./mpeRoom";
+import { GameRoom, type GameRoomOptions } from "./gameRoom";
 import type { AgentID, EndInfo, PlayerID, RoomID, ServerEvent } from "../../../shared/types";
 import { endInfo, studyConfig } from "../studyConfig";
 
@@ -28,7 +28,7 @@ const LOBBY_GRACE_MS = Number(process.env.LOBBY_GRACE_MS ?? 10_000);
 const TRIAL_GRACE_MS = Number(process.env.TRIAL_GRACE_MS ?? 30_000);
 
 export class RoomManager {
-  private rooms = new Map<RoomID, MpeRoom>();
+  private rooms = new Map<RoomID, GameRoom>();
   private playerRoom = new Map<PlayerID, RoomID>();
   private graceTimers = new Map<PlayerID, NodeJS.Timeout>();
   /** Participants who can't continue, and why (kept for the server's lifetime). */
@@ -36,11 +36,11 @@ export class RoomManager {
   private nextRoomNum = 1;
 
   /** makeOptions gets the room's number (room_1 → 1), e.g. to pick its seed. */
-  constructor(private makeOptions: (roomNum: number) => MpeRoomOptions) {}
+  constructor(private makeOptions: (roomNum: number) => GameRoomOptions) {}
 
   get roomCount() { return this.rooms.size; }
 
-  roomOf(playerId: PlayerID): MpeRoom | null {
+  roomOf(playerId: PlayerID): GameRoom | null {
     const id = this.playerRoom.get(playerId);
     return id ? this.rooms.get(id) ?? null : null;
   }
@@ -64,13 +64,13 @@ export class RoomManager {
     send: (msg: ServerEvent) => void,
     roomId?: RoomID,
     meta?: Record<string, string>,
-  ): { room: MpeRoom; agentId: AgentID } | { error: string } {
+  ): { room: GameRoom; agentId: AgentID } | { error: string } {
     const existing = this.roomOf(playerId);
     if (existing) return { room: existing, agentId: existing.agentFor(playerId)! };
     const ended = this.ended.get(playerId);
     if (ended) return { error: `Session ended: ${ended.reason}` };
 
-    let room: MpeRoom | undefined;
+    let room: GameRoom | undefined;
     if (roomId) {
       room = this.rooms.get(roomId);
       if (!room) return { error: `Room ${roomId} does not exist` };
@@ -149,7 +149,7 @@ export class RoomManager {
   }
 
   /** Room can't continue: everyone in it is done (aborted), and the room is freed. */
-  private abortRoom(room: MpeRoom, reason: string) {
+  private abortRoom(room: GameRoom, reason: string) {
     for (const pid of room.playerIds()) {
       this.clearGrace(pid);
       this.playerRoom.delete(pid);
@@ -165,10 +165,10 @@ export class RoomManager {
     if (t) { clearTimeout(t); this.graceTimers.delete(playerId); }
   }
 
-  private createRoom(): MpeRoom {
+  private createRoom(): GameRoom {
     const num = this.nextRoomNum++;
     const id: RoomID = `room_${num}`;
-    const room: MpeRoom = new MpeRoom(id, this.makeOptions(num), (reason) => this.abortRoom(room, reason));
+    const room: GameRoom = new GameRoom(id, this.makeOptions(num), (reason) => this.abortRoom(room, reason));
     this.rooms.set(id, room);
     console.log(`[rooms] created ${id} (data: ${room.log.filePath})`);
     return room;

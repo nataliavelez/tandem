@@ -5,8 +5,8 @@ Resuming after a refresh or reconnect:
 - The current timeline index is kept in sessionStorage, so a refresh returns
   to the same screen.
 - When the server answers HELLO with SESSION_STATUS, the index is corrected:
-    resumed + running      → the timeline's mpe entry for the trial in progress
-    resumed + not running  → just past the last completed mpe trial (or the
+    resumed + running      → the timeline's game entry for the trial in progress
+    resumed + not running  → just past the last completed game trial (or the
                              waiting room if none completed yet)
 
 Ending early (EarlyEnd screen; saved in sessionStorage so a refresh stays there):
@@ -34,7 +34,8 @@ import { useSocket } from "../../hooks/useSocket";
 import { ConsentForm } from "../trials/Consent";
 import { Display } from "../trials/Display";
 import { WaitingRoom } from "../trials/WaitingRoom";
-import { MpeTrial } from "../trials/MpeTrial";
+import { GameTrial } from "../trials/GameTrial";
+import { InstructionsScreen } from "../trials/InstructionsScreen";
 import { EarlyEnd } from "../trials/EarlyEnd";
 import { studyConfig } from "../../scripts/studyConfig";
 import { loadAbortPolicy } from "../../context/abortPolicy";
@@ -68,13 +69,13 @@ function loadIndex(length: number): number {
 
 /** Where the participant should be, given the server's view of their session. */
 function resumeIndex(timeline: TrialTimeline, status: SessionStatus, current: number): number {
-  const mpeIdx = timeline.flatMap((t, i) => (t.type === "mpe" ? [i] : []));
+  const gameIdx = timeline.flatMap((t, i) => (t.type === "game" ? [i] : []));
   const waitingIdx = timeline.findIndex((t) => t.type === "waiting-room");
 
   if (status.status === "resumed") {
-    if (status.running) return mpeIdx[status.trialsCompleted] ?? current;
+    if (status.running) return gameIdx[status.trialsCompleted] ?? current;
     if (status.trialsCompleted > 0) {
-      const lastDone = mpeIdx[status.trialsCompleted - 1];
+      const lastDone = gameIdx[status.trialsCompleted - 1];
       return lastDone === undefined ? current : Math.max(current, lastDone + 1);
     }
     return waitingIdx >= 0 ? Math.max(current, waitingIdx) : current;
@@ -88,7 +89,7 @@ function firstServerIndex(timeline: TrialTimeline): number {
 }
 
 /** Screens that need the server; show a banner on them while reconnecting. */
-const NEEDS_SERVER = new Set<TrialConfig["type"]>(["waiting-room", "mpe"]);
+const NEEDS_SERVER = new Set<TrialConfig["type"]>(["waiting-room", "game"]);
 
 export function TrialEngine({ timeline }: Props) {
   const { sessionStatus, connected } = useSocket();
@@ -196,13 +197,19 @@ function renderTrial(currentTrial: TrialConfig, currentIndex: number, advance: (
         <Display key={currentTrial.id} config={currentTrial} onNext={advance} />
       );
 
-    case "mpe": {
+    case "instructions":
+      return (
+        <InstructionsScreen key={currentTrial.id} config={currentTrial} onNext={advance} />
+      );
+
+    case "game": {
       const round = currentTrial.round ?? currentIndex + 1;
+      // Fallback only: the server's TRIAL_START says how long the round really is
       const tickMs = currentTrial.tickMs ?? 100;
       const horizon = currentTrial.horizon ?? 3000;
       const durationMs = horizon * tickMs;
       return (
-        <MpeTrial
+        <GameTrial
           key={currentTrial.id}
           round={round}
           durationMs={durationMs}
