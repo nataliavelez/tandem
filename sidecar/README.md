@@ -1,4 +1,4 @@
-This sidecar wraps JaxMARL’s MPE environments (starting with simple_spread) and exposes them to Tandem via FastAPI.
+This sidecar wraps JaxMARL’s environments (starting with simple_spread) and exposes them to Tandem via FastAPI.
 
 ## Installation
 

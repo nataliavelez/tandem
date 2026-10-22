@@ -1,0 +1,6 @@
+# cramped_room: the classic 2-player Overcooked-AI kitchen (Carroll et al., 2019).
+# 1 pot, 2 onion piles, 1 plate pile, 1 delivery point; spawns a, b.
+WWPWW
+Oa bO
+W   W
+WBWXW

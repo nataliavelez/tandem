@@ -1,24 +1,23 @@
 {/*
-Per-study settings: what the study and condition are called, which game is
-played (and on which layout), how seeds are assigned, group size limits, and
-who gets paid when the study ends early. Values come from the study's settings
+Per-study settings. Values come from the study's settings
 file (see loadEnv.ts and studies/example.env).
 
-Payment rules (each can be changed per study):
-  aborted  (our side: server stopped/crashed, environment failure, or the group
-            fell below MIN_GROUP_SIZE) → PAY_ABORTED (default: paid)
-  dropped  (participant left / disconnected past the grace period)
-                                      → PAY_DROPPED (default: not paid)
-  never seated (e.g. still on consent when the server stopped) → never paid
-  replaced (opened in another tab)    → not an ending; they continue there
+Live settings: group size, min group size, lobby timeout.
+Start from file but can be changed from the admin view.
 
-Finishing: a participant who played every round (ROUNDS) gets COMPLETION_URL
-on the study's final screen (asked for by the client; never in the bundle).
+Solo practice (PRACTICE=true): before the lobby, each participant plays alone in
+PRACTICE_LAYOUT until one attempt serves PRACTICE_MIN_SOUPS soups (retries
+unlimited) within PRACTICE_TIME_LIMIT_MS.
 
-Paid participants are sent to the outcome's completion URL. For Prolific, use a
-separate completion code per outcome and set that code's action in Prolific
-(e.g. approve automatically) so these submissions are handled without manual
-review.
+Payment rules:
+  aborted  (our side) → PAY_ABORTED (default: paid)
+  no_group (no group formed) → PAY_NO_GROUP (default: paid)
+  practice_timeout (didn't pass practice) → PAY_PRACTICE_TIMEOUT (default: not paid)
+  dropped  (participant left / disconnected)→ PAY_DROPPED (default: not paid)
+  never seated → never paid
+  replaced (opened in another tab) → they continue there
+
+Finishing: a participant who played every round gets COMPLETION_URL
 
 Created by: Elizabeth Mieczkowski, Updated: 10/2026
 */}
@@ -39,28 +38,128 @@ function envUrl(name: string): string | null {
 const GAMES: GameName[] = ["mpe", "overcooked"];
 const game = (process.env.GAME?.trim() || "mpe") as GameName;
 if (!GAMES.includes(game)) {
-  // Running a study with the wrong game is worse than not starting
   console.error(`[config] GAME must be one of ${GAMES.join(", ")} (got "${process.env.GAME}")`);
   process.exit(1);
 }
-/** Overcooked layout: sidecar/layouts/<LAYOUT>.txt (it must have at least REQUIRED_PLAYERS spawns) */
+/** Overcooked layout: sidecar/layouts/<LAYOUT>.txt */
 const layout = game === "overcooked" ? (process.env.LAYOUT?.trim() || "open_room") : null;
 
-const playersPerRoom = Number(process.env.REQUIRED_PLAYERS ?? 2);
-/** Rounds each group plays; after the last one the group is finished (must match the client timeline's game screens) */
+const intOr = (v: string | undefined, fallback: number) => {
+  const n = Math.floor(Number(v));
+  return v !== undefined && v.trim() !== "" && Number.isFinite(n) ? n : fallback;
+};
+const optionalInt = (v: string | undefined) => (v !== undefined && v.trim() !== "" && Number.isFinite(Number(v)) ? Math.floor(Number(v)) : null);
+
+/** Settings the admin view can change while the server runs */
+export type LiveSettings = {
+  groupSize: number;
+  minGroupSize: number | null;
+  /**
+   * At lobby timeout, start a waiting group anyway (resized to the people there)
+   */
+  minStartSize: number | null;
+  /** Give up */
+  lobbyTimeoutMs: number;
+  maxRooms: number | null;
+};
+
+export const fileSettings: Readonly<LiveSettings> = Object.freeze({
+  groupSize: Math.max(1, intOr(process.env.REQUIRED_PLAYERS, 2)),
+  minGroupSize: optionalInt(process.env.MIN_GROUP_SIZE),
+  minStartSize: optionalInt(process.env.MIN_START_SIZE),
+  lobbyTimeoutMs: Math.max(0, intOr(process.env.LOBBY_TIMEOUT_MS, 600_000)),
+  maxRooms: optionalInt(process.env.MAX_ROOMS),
+});
+
+export const live: LiveSettings = { ...fileSettings };
+
+export function minGroupSizeFor(size: number) {
+  return Math.max(1, Math.min(size, live.minGroupSize ?? size));
+}
+
+export const MAX_GROUP_SIZE = 10;
+
+/**
+ * Check a change from the admin view. 
+ */
+export function validateSettings(patch: unknown): { ok: true; next: LiveSettings } | { ok: false; error: string } {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) return { ok: false, error: "Expected a JSON object" };
+  const p = patch as Record<string, unknown>;
+  const known = ["groupSize", "minGroupSize", "minStartSize", "lobbyTimeoutMs", "maxRooms"];
+  const unknown = Object.keys(p).filter((k) => !known.includes(k));
+  if (unknown.length) return { ok: false, error: `Unknown setting(s): ${unknown.join(", ")}` };
+  const isInt = (v: unknown) => typeof v === "number" && Number.isInteger(v);
+  const next: LiveSettings = { ...live };
+  if ("groupSize" in p) {
+    if (!isInt(p.groupSize) || (p.groupSize as number) < 1 || (p.groupSize as number) > MAX_GROUP_SIZE) {
+      return { ok: false, error: `Group size must be a whole number from 1 to ${MAX_GROUP_SIZE}` };
+    }
+    next.groupSize = p.groupSize as number;
+  }
+  if ("minGroupSize" in p) {
+    if (p.minGroupSize !== null && (!isInt(p.minGroupSize) || (p.minGroupSize as number) < 1)) {
+      return { ok: false, error: "Minimum group size must be a whole number of at least 1, or empty (= group size)" };
+    }
+    next.minGroupSize = p.minGroupSize as number | null;
+  }
+  if ("minStartSize" in p) {
+    if (p.minStartSize !== null && (!isInt(p.minStartSize) || (p.minStartSize as number) < 1)) {
+      return { ok: false, error: "Smallest group to start must be a whole number of at least 1, or empty (never start short)" };
+    }
+    next.minStartSize = p.minStartSize as number | null;
+  }
+  if (next.minStartSize !== null && next.minStartSize > next.groupSize) {
+    return { ok: false, error: `Smallest group to start (${next.minStartSize}) can't be larger than the group size (${next.groupSize})` };
+  }
+  if (next.minGroupSize !== null && next.minGroupSize > next.groupSize) {
+    return { ok: false, error: `Minimum group size (${next.minGroupSize}) can't be larger than the group size (${next.groupSize})` };
+  }
+  if ("lobbyTimeoutMs" in p) {
+    if (!isInt(p.lobbyTimeoutMs) || (p.lobbyTimeoutMs as number) < 0 || (p.lobbyTimeoutMs as number) > 24 * 3600_000) {
+      return { ok: false, error: "Lobby timeout must be between 0 (no limit) and 24 hours" };
+    }
+    next.lobbyTimeoutMs = p.lobbyTimeoutMs as number;
+  }
+  if ("maxRooms" in p) {
+    if (p.maxRooms !== null && (!isInt(p.maxRooms) || (p.maxRooms as number) < 0 || (p.maxRooms as number) > 10_000)) {
+      return { ok: false, error: "Number of rooms must be a whole number from 0 to 10000, or empty (unlimited)" };
+    }
+    next.maxRooms = p.maxRooms as number | null;
+  }
+  return { ok: true, next };
+}
+
+export function setLiveSettings(next: LiveSettings) {
+  const changes: Record<string, [unknown, unknown]> = {};
+  for (const k of Object.keys(next) as (keyof LiveSettings)[]) {
+    if (live[k] !== next[k]) changes[k] = [live[k], next[k]];
+  }
+  Object.assign(live, next);
+  return changes;
+}
+/** Rounds each group plays */
 const rounds = Math.max(1, Math.floor(Number(process.env.ROUNDS ?? 1)) || 1);
+
+/** Solo practice before the lobby  */
+const practice = {
+  enabled: envBool("PRACTICE", false),
+  layout: process.env.PRACTICE_LAYOUT?.trim() || "cramped_room",
+  /** Steps per practice attempt */
+  horizon: Math.max(1, intOr(process.env.PRACTICE_HORIZON, 600)),
+  /** Soups one attempt must serve to pass (0 = any attempt passes) */
+  minSoups: Math.max(0, intOr(process.env.PRACTICE_MIN_SOUPS, 1)),
+  /** From the start of practice; 0 = no limit */
+  timeLimitMs: Math.max(0, intOr(process.env.PRACTICE_TIME_LIMIT_MS, 600_000)),
+};
 const seed = Number(process.env.SEED ?? 123);
 const seedPerRoom = envBool("SEED_PER_ROOM", false);
 
-/** The commit this server runs, and whether it had uncommitted changes. */
 function codeVersion(): { commit: string | null; dirty: boolean | null } {
-  // Deployments without .git can set CODE_VERSION instead
   if (process.env.CODE_VERSION) return { commit: process.env.CODE_VERSION, dirty: null };
   const repo = path.resolve(__dirname, "../..");
   const git = (...args: string[]) =>
     execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
   try {
-    // The data dir is gitignored, so live logs don't mark the tree dirty
     return { commit: git("rev-parse", "HEAD"), dirty: git("status", "--porcelain").length > 0 };
   } catch {
     return { commit: null, dirty: null };
@@ -68,7 +167,6 @@ function codeVersion(): { commit: string | null; dirty: boolean | null } {
 }
 
 export const studyConfig = {
-  /** Recorded in every data log, so files can be matched to their study/condition. */
   studyName: process.env.STUDY_NAME?.trim() || null,
   condition: process.env.CONDITION?.trim() || null,
   configFile: process.env.STUDY_CONFIG ?? null,
@@ -76,52 +174,49 @@ export const studyConfig = {
   game,
   layout,
   /**
-   * Environment seed for a room. Default: every room uses SEED, so every group
+   * Env seed for a room. Default: every room uses SEED, so every group
    * plays the same sequence of starting layouts. SEED_PER_ROOM=true gives
    * room_k seed SEED + k - 1 instead.
    */
   seedFor: (roomNum: number) => (seedPerRoom ? seed + roomNum - 1 : seed),
   seed,
   seedPerRoom,
-  playersPerRoom,
   rounds,
-  /** Where participants who finish every round are sent (e.g. the Prolific completion URL) */
+  practice,
   completionUrl: envUrl("COMPLETION_URL"),
-  /**
-   * Once a group has started, if drop-outs leave fewer than this many players,
-   * the study is aborted for the rest of the group. Default: the full group
-   * (any drop-out ends the study for everyone).
-   */
-  minGroupSize: Math.min(playersPerRoom, Math.max(1, Number(process.env.MIN_GROUP_SIZE ?? playersPerRoom))),
   payment: {
     aborted: { paid: envBool("PAY_ABORTED", true), completionUrl: envUrl("ABORTED_COMPLETION_URL") },
+    no_group: { paid: envBool("PAY_NO_GROUP", true), completionUrl: envUrl("NO_GROUP_COMPLETION_URL") },
+    practice_timeout: { paid: envBool("PAY_PRACTICE_TIMEOUT", false), completionUrl: envUrl("PRACTICE_TIMEOUT_COMPLETION_URL") },
     dropped: { paid: envBool("PAY_DROPPED", false), completionUrl: envUrl("DROPPED_COMPLETION_URL") },
   },
 };
 
-/** What a data log records about the study this server is running. */
 export function studyInfo() {
-  const { studyName, condition, configFile, code, game, layout, seed, seedPerRoom, playersPerRoom, rounds, minGroupSize, payment } = studyConfig;
+  const { studyName, condition, configFile, code, game, layout, seed, seedPerRoom, rounds, payment } = studyConfig;
   return {
-    studyName, condition, configFile, code, game, layout, seed, seedPerRoom, playersPerRoom, rounds, minGroupSize,
-    paid: { aborted: payment.aborted.paid, dropped: payment.dropped.paid },
+    studyName, condition, configFile, code, game, layout, seed, seedPerRoom, rounds,
+    playersPerRoom: live.groupSize,
+    minGroupSize: minGroupSizeFor(live.groupSize),
+    minStartSize: live.minStartSize,
+    lobbyTimeoutMs: live.lobbyTimeoutMs,
+    practice,
+    maxRooms: live.maxRooms,
+    paid: { aborted: payment.aborted.paid, no_group: payment.no_group.paid, practice_timeout: payment.practice_timeout.paid, dropped: payment.dropped.paid },
   };
 }
 
-/** The EndInfo sent to a seated participant whose study ended early. */
 export function endInfo(outcome: EndOutcome, reason: string): EndInfo {
   if (outcome === "replaced") return { outcome, reason, paid: false, completionUrl: null };
   return { outcome, reason, ...studyConfig.payment[outcome] };
 }
 
-/** For participants who never got a seat (e.g. still on consent): never paid. */
 export function unseatedEndInfo(reason: string): EndInfo {
   return { outcome: "aborted", reason, paid: false, completionUrl: null };
 }
 
-/** Warn at startup about settings that would strand paid participants. */
 export function checkStudyConfig() {
-  const { payment, minGroupSize } = studyConfig;
+  const { payment } = studyConfig;
   if (!studyConfig.completionUrl) {
     console.warn("[config] COMPLETION_URL is not set: participants who finish won't be sent anywhere to complete.");
   }
@@ -137,6 +232,13 @@ export function checkStudyConfig() {
   if (studyConfig.code.dirty) console.warn("[config] running with uncommitted code changes (logged as code.dirty=true).");
   console.log(`[config] study ${studyConfig.studyName ?? "(unnamed)"} / condition ${studyConfig.condition ?? "(none)"}; ` +
     `game ${game}${layout ? ` (layout ${layout})` : ""}; seed ${seed}${seedPerRoom ? " + room number" : " (same for every room)"}`);
-  console.log(`[config] group size ${playersPerRoom} (abort below ${minGroupSize}); ${rounds} round(s); ` +
-    `pay aborted=${payment.aborted.paid}, dropped=${payment.dropped.paid}`);
+  const timeout = live.lobbyTimeoutMs ? `lobby timeout ${Math.round(live.lobbyTimeoutMs / 1000)}s` : "no lobby timeout";
+  console.log(`[config] group size ${live.groupSize} (abort below ${minGroupSizeFor(live.groupSize)}); ${rounds} round(s); ` +
+    `${timeout}; ${live.maxRooms === null ? "unlimited rooms" : `at most ${live.maxRooms} room(s)`}; ` +
+    `pay aborted=${payment.aborted.paid}, no_group=${payment.no_group.paid}, practice_timeout=${payment.practice_timeout.paid}, dropped=${payment.dropped.paid}`);
+  if (live.minStartSize !== null) console.log(`[config] at the lobby timeout, groups of at least ${live.minStartSize} start short`);
+  if (practice.enabled) {
+    console.log(`[config] solo practice: ${practice.layout}, ${practice.horizon} steps per attempt, ` +
+      `pass = ${practice.minSoups} soup(s) in one attempt, time limit ${practice.timeLimitMs ? `${Math.round(practice.timeLimitMs / 1000)}s` : "none"}`);
+  }
 }

@@ -8,6 +8,7 @@ export type TrialType =
   | "chat"
   | "game"
   | "survey"
+  | "practice"
   | "completion"; 
 
 interface BaseTrialConfig {
@@ -66,8 +67,31 @@ export interface GameTrialConfig extends BaseTrialConfig {
   condition?: string;
 }
 
+/** One survey question. Answers are logged by id (survey_response). */
+export type SurveyQuestion =
+  /** Rating from min to max (e.g. 1–5), with labels for the ends */
+  | { id: string; type: "scale"; text: string; min: number; max: number; minLabel?: string; maxLabel?: string; required?: boolean }
+  /** Pick one option */
+  | { id: string; type: "choice"; text: string; options: string[]; required?: boolean }
+  /** Free text; multiline for a text box. maxLength defaults to 2000 characters */
+  | { id: string; type: "text"; text: string; multiline?: boolean; maxLength?: number; required?: boolean };
+
 export interface SurveyTrialConfig extends BaseTrialConfig {
   type: "survey";
+  title?: string;
+  intro?: string;
+  questions: SurveyQuestion[];
+}
+
+/**
+ * Solo practice before the lobby: attempts in the server's practice kitchen
+ * until one serves the required soups (server settings PRACTICE_*).
+ */
+export interface PracticeTrialConfig extends BaseTrialConfig {
+  type: "practice";
+  title?: string;
+  /** Shown before the first attempt */
+  intro?: string;
 }
 
 /** Last screen for participants who finished: thanks + redirect to the completion URL (from the server). */
@@ -85,6 +109,7 @@ export type TrialConfig =
   | ChatTrialConfig
   | GameTrialConfig
   | SurveyTrialConfig
+  | PracticeTrialConfig
   | CompletionTrialConfig;
 
 export type TrialTimeline = TrialConfig[];

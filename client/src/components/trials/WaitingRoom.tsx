@@ -1,14 +1,6 @@
 {/*
 Lobby screen so players can join lobby, wait for room to fill, and start game.
 
-Inputs (props): { config: { maxParticipants?: number }, onRoomAssigned(roomId) }
-The group size shown and waited for is the server's (lobby maxParticipants);
-config.maxParticipants is only a fallback.
-
-Outputs:
-- On socket open, sends JOIN_LOBBY
-- Listens for: ASSIGN_ROOM, STATE_UPDATE with phase: "lobby"
-
 Created by: Elizabeth Mieczkowski, Updated: 10/2025
 */}
 
@@ -27,6 +19,22 @@ export function WaitingRoom({ config, onRoomAssigned }: Props) {
   const [roomId, setRoomId] = useState<string | null>(null);
   const [playerCount, setPlayerCount] = useState<number>(0);
   const [groupSize, setGroupSize] = useState<number | undefined>(config.maxParticipants);
+  const [deadline, setDeadline] = useState<{ at: number | null; paid: boolean } | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const handle = (m: ServerEvent) => {
+      if (m.type === "LOBBY_DEADLINE") setDeadline({ at: m.deadline, paid: m.paid });
+    };
+    addMessageListener(handle);
+    return () => removeMessageListener(handle);
+  }, [addMessageListener, removeMessageListener]);
+
+  useEffect(() => {
+    if (!deadline?.at) return;
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [deadline]);
 
   const sentJoinRef = useRef(false);
   const advancedRef = useRef(false);
@@ -107,6 +115,8 @@ export function WaitingRoom({ config, onRoomAssigned }: Props) {
 
   const needed = groupSize;
   const ready = needed ? playerCount >= needed : false;
+  const secondsLeft = deadline?.at ? Math.max(0, Math.ceil((deadline.at - now) / 1000)) : null;
+  const clock = secondsLeft === null ? null : `${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, "0")}`;
 
   return (
     <div style={{ padding: "2rem" }}>
@@ -121,6 +131,13 @@ export function WaitingRoom({ config, onRoomAssigned }: Props) {
           {typeof needed === "number" && (
             <p style={{ color: ready ? "#059669" : "#6b7280" }}>
               {ready ? "Everyone is here. Waiting for start…" : "Waiting for more participants…"}
+            </p>
+          )}
+          {clock !== null && !ready && (
+            <p style={{ maxWidth: 560 }}>
+              We'll keep looking for teammates for up to <strong>{clock}</strong> more. If a group can't be
+              formed by then, the study will end{deadline?.paid ? " and you will be paid for your time" : ""}.
+              Please keep this window open.
             </p>
           )}
         </>

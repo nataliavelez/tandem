@@ -88,8 +88,17 @@ Set at least:
 - `ROUNDS`: must equal the number of `"game"` screens in
   `client/src/scripts/expTimeline.ts`
 - `HORIZON`, `TICK_MS`
-- `COMPLETION_URL`, `PAY_ABORTED` + `ABORTED_COMPLETION_URL`, `PAY_DROPPED`
-  + `DROPPED_COMPLETION_URL`
+- `LOBBY_TIMEOUT_MS` (default 10 minutes), `MAX_ROOMS` (empty = unlimited),
+  `MIN_START_SIZE` (start short at the lobby timeout; empty = never)
+- Solo practice: `PRACTICE=true`, `PRACTICE_LAYOUT`, `PRACTICE_HORIZON`,
+  `PRACTICE_MIN_SOUPS`, `PRACTICE_TIME_LIMIT_MS`; `PAY_PRACTICE_TIMEOUT` +
+  `PRACTICE_TIMEOUT_COMPLETION_URL`
+- `COMPLETION_URL`, `PAY_ABORTED` + `ABORTED_COMPLETION_URL`, `PAY_NO_GROUP`
+  + `NO_GROUP_COMPLETION_URL`, `PAY_DROPPED` + `DROPPED_COMPLETION_URL`
+
+Group size, minimum group size, smallest group to start, lobby timeout and the
+number of rooms can also be changed live on the admin page. Those changes last until the server restarts,
+so put the values you want to keep in the study file.
 
 Leave `PORT` and `HOST` alone: `/etc/tandem/tandem.env` sets them for this
 server, and its values win over the study file.
@@ -139,12 +148,15 @@ sudo journalctl -u tandem-server -n 30 --no-pager
 - Study URL:
   `https://study.yourlab.org/?PROLIFIC_PID={{%PROLIFIC_PID%}}&STUDY_ID={{%STUDY_ID%}}&SESSION_ID={{%SESSION_ID%}}`
 - Completion: choose redirect, and match each Prolific code to
-  `COMPLETION_URL` / `ABORTED_COMPLETION_URL` / `DROPPED_COMPLETION_URL`.
+  `COMPLETION_URL` / `ABORTED_COMPLETION_URL` / `NO_GROUP_COMPLETION_URL` /
+  `DROPPED_COMPLETION_URL`.
 - Devices: **desktop only**; the game needs a keyboard.
 
 ## 8. During a session
 
-- Keep `/admin` open: rooms, who is where, and server health.
+- Keep `/admin` open: rooms, who is where, and server health. Use its
+  Settings to adjust group size, lobby timeout and how many groups to open as
+  people arrive.
 - **Don't restart or update while anyone is connected.** Stopping the server
   ends every session in progress (paid per `PAY_ABORTED`).
 - Live server log: `sudo journalctl -fu tandem-server`

@@ -1,46 +1,10 @@
 {/*
-WebSocket orchestrator: accepts connections and routes messages to rooms.
-All room/seat/trial logic lives in RoomManager and MpeRoom.
+WebSocket orchestrator: accepts connections and routes messages to rooms
 
-Outputs:
-- HELLO { participantId }: identifies the connection. The participant ID is the
-  player's ID everywhere (seats, data log), so a refresh or reconnect with the
-  same ID gets the same room and agent back. Replies ASSIGN_ID + SESSION_STATUS
-  (new | resumed | ended); on resume also ASSIGN_ROOM, ASSIGN_AGENT and, mid-trial,
-  the current TRIAL_START. A second connection with the same ID takes over the seat
-  and the old connection is told its session ended.
-  (A connection that skips HELLO gets a random anonymous ID on its first message.)
-- JOIN_LOBBY / JOIN_ROOM: place player in a room (RoomManager), then send
-  ASSIGN_ROOM and ASSIGN_AGENT
-- TRIAL_READY: mark player ready in their room; room starts when all seats are ready
-- PLAYER_ACTION: forward to the player's room; the room applies it to the
-  player's OWN agent (any agentId sent by the client is ignored)
-- STUDY_COMPLETE (from the final screen): COMPLETION with COMPLETION_URL if
-  this participant finished every round (ROUNDS), else with null and a reason.
-  Logged once as study_completed.
-- CLIENT_LOG: write a browser-side event (consent, screen change, survey
-  answers, early end) to the participants log with the player's room/agent,
-  then LOG_ACK it. Repeats of an id (client resend) are acked, not rewritten.
-- CLOSE: hold the player's seat for a grace period (RoomManager.disconnect)
-- SIGINT/SIGTERM: end the study early for every participant (seated: aborted,
-  paid per PAY_ABORTED; not yet seated: not paid; finished: left alone, they
-  completed the game), close the data logs and sidecar envs, then exit
-- Seated players also get ABORT_POLICY (paid? where to go?) in case the server
-  later disappears without warning
-- HTTP on the same port: the read-only admin view (/admin, admin.ts; off
-  unless ADMIN_TOKEN is set). WebSocket upgrades go to the game.
-- Startup: asks the sidecar to compile the game once (warmSidecar), so the
-  first rooms don't stall each other while compiling. If the sidecar rejects
-  the game settings (e.g. a layout with fewer spawns than REQUIRED_PLAYERS),
-  the server exits instead of running a study that can't start. Also starts
-  the off-server data backup (backup.ts), which gets a final upload on shutdown
-
-Settings: see loadEnv.ts / studies/example.env.
-
-Edited by: Elizabeth Mieczkowski, Updated: 09/2026
+Edited by: Elizabeth Mieczkowski, Updated: 10/2026
 */}
 
-import "./loadEnv"; // must be first: other modules read process.env on load
+import "./loadEnv"; 
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import type { ClientEvent, ServerEvent, PlayerID } from "../../shared/types";
@@ -49,13 +13,14 @@ import { warmSidecar, type GameRoomOptions } from "./game/gameRoom";
 import { SidecarError } from "./game/sidecarClient";
 import { DataLog } from "./game/dataLog";
 import { backup } from "./backup";
-import { studyConfig, studyInfo, endInfo, unseatedEndInfo, checkStudyConfig } from "./studyConfig";
+import {
+  studyConfig, studyInfo, endInfo, unseatedEndInfo, checkStudyConfig,
+  live, fileSettings, minGroupSizeFor, validateSettings, setLiveSettings,
+} from "./studyConfig";
 import { createAdmin, type ParticipantInfo } from "./admin";
 
 const PORT = Number(process.env.PORT ?? 8080);
-/** Interface to listen on: unset = all (local/LAN testing); 127.0.0.1 behind the HTTPS proxy (deploy/) */
 const HOST = process.env.HOST?.trim() || undefined;
-const PLAYERS_PER_ROOM = studyConfig.playersPerRoom;
 const HORIZON = Number(process.env.HORIZON ?? 3000); // steps per trial
 
 const PARTICIPANT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -65,31 +30,79 @@ const MAX_LOG_DATA_BYTES = 32_768;
 
 
 const roomOptions = (roomNum: number): GameRoomOptions => ({
+  kind: "group",
   game: studyConfig.game,
   seed: studyConfig.seedFor(roomNum),
-  num_agents: PLAYERS_PER_ROOM,
+  num_agents: live.groupSize,
+  minGroupSize: minGroupSizeFor(live.groupSize),
   horizon: HORIZON,
   rounds: studyConfig.rounds,
   ...(studyConfig.game === "overcooked" ? { layout: studyConfig.layout! } : { num_landmarks: 3 }),
 });
-const rooms = new RoomManager(roomOptions);
+/** One participant's solo practice kitchen: unlimited attempts, same seed for everyone. */
+const practiceOptions = (): GameRoomOptions => ({
+  kind: "practice",
+  game: studyConfig.game,
+  seed: studyConfig.seed,
+  num_agents: 1,
+  minGroupSize: 1,
+  horizon: studyConfig.practice.horizon,
+  rounds: null,
+  ...(studyConfig.game === "overcooked" ? { layout: studyConfig.practice.layout } : { num_landmarks: 3 }),
+});
+const rooms = new RoomManager({ group: roomOptions, practice: practiceOptions });
 
-/** Participant-level events (not tied to a room): HELLOs and browser-side logs. */
+/** Participant-level events (not tied to a room). */
 const participantsLog = new DataLog("participants");
 participantsLog.write("server_started", { study: studyInfo() });
 /** CLIENT_LOG ids already written, so a resend after a lost ack isn't logged twice. */
 const loggedIds = new Set<string>();
 
-/** The live socket for each participant (at most one). */
+/** The live socket for each participant. */
 const sessions = new Map<PlayerID, WebSocket>();
-/** Everyone seen since the server started: when, and their last screen (for the admin view). */
+/** Everyone seen since the server started. */
 const participants = new Map<PlayerID, ParticipantInfo>();
+
+/**
+ * Change live settings from the admin view.
+ */
+let settingsChain: Promise<unknown> = Promise.resolve();
+function applySettings(patch: unknown): Promise<{ ok: true; settings: typeof live; resized: Record<string, number> } | { ok: false; error: string }> {
+  const run = async () => {
+    const checked = validateSettings(patch);
+    if (!checked.ok) return checked;
+    const { next } = checked;
+    if (next.groupSize !== live.groupSize) {
+      try {
+        await warmSidecar({ ...roomOptions(rooms.roomsOpened + 1), num_agents: next.groupSize });
+      } catch (e) {
+        if (e instanceof SidecarError && e.status >= 400 && e.status < 500) {
+          return { ok: false as const, error: `The game can't be set up for ${next.groupSize} players: ${e.message}` };
+        }
+        return { ok: false as const, error: `The game environment (sidecar) is unavailable, so the group size can't be changed: ${String((e as Error)?.message ?? e)}` };
+      }
+    }
+    const changes = setLiveSettings(next);
+    const resized = "groupSize" in changes || "minGroupSize" in changes ? rooms.resizeOpenRooms() : {};
+    if ("lobbyTimeoutMs" in changes) rooms.sendLobbyDeadlines();
+    if (Object.keys(changes).length) {
+      participantsLog.write("settings_changed", { by: "admin", changes, settings: { ...live }, resizedRooms: resized });
+      console.log(`[admin] settings changed: ${JSON.stringify(changes)}${Object.keys(resized).length ? `; lobby rooms now ${JSON.stringify(resized)}` : ""}`);
+    }
+    return { ok: true as const, settings: { ...live }, resized };
+  };
+  const result = settingsChain.then(run, run);
+  settingsChain = result.catch(() => {});
+  return result;
+}
 
 const admin = createAdmin({
   rooms,
   participants,
   isConnected: (pid) => sessions.has(pid),
   settings: { horizon: HORIZON, tickMs: Number(process.env.TICK_MS ?? 100) },
+  liveSettings: () => ({ current: { ...live }, file: { ...fileSettings } }),
+  applySettings,
 });
 // One port for both: HTTP requests (admin view) and WebSocket upgrades (the game)
 const httpServer = http.createServer((req, res) => void admin.handle(req, res));
@@ -99,12 +112,10 @@ function send(ws: WebSocket, msg: ServerEvent) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
-/** Tell a seated player what happens if the server vanishes (see ABORT_POLICY). */
 function sendAbortPolicy(ws: WebSocket) {
   send(ws, { type: "ABORT_POLICY", ...studyConfig.payment.aborted });
 }
 
-/** Keep only short string values from client-supplied metadata. */
 function cleanMeta(meta: unknown): Record<string, string> {
   const out: Record<string, string> = {};
   if (!meta || typeof meta !== "object") return out;
@@ -126,8 +137,7 @@ wss.on("connection", (ws) => {
     sessions.set(pid, ws);
     send(ws, { type: "ASSIGN_ID", id: pid });
 
-    // Same participant already connected elsewhere (second tab, or a refresh
-    // that arrived before the old socket closed): the new connection wins.
+    // Same participant already connected elsewhere.
     if (prev && prev !== ws) {
       send(prev, { type: "SESSION_STATUS", status: "ended", ...endInfo("replaced", "This study was opened in another window.") });
       prev.close(4000, "replaced");
@@ -149,7 +159,7 @@ wss.on("connection", (ws) => {
       const finished = rooms.finishedStatus(pid);
       send(ws, finished
         ? { type: "SESSION_STATUS", status: "finished", roundsCompleted: finished.rounds }
-        : { type: "SESSION_STATUS", status: "new" });
+        : { type: "SESSION_STATUS", status: "new", ...(studyConfig.practice.enabled ? { practicePassed: rooms.practicePassed(pid) } : {}) });
       return;
     }
     send(ws, { type: "ASSIGN_ROOM", roomId: resumed.room.id });
@@ -162,8 +172,16 @@ wss.on("connection", (ws) => {
       agentId: resumed.agentId,
       running: resumed.running,
       trialsCompleted: resumed.trialsCompleted,
+      kind: resumed.room.options.kind,
     });
+    if (resumed.room.options.kind === "practice") {
+      const status = rooms.practiceStatus(pid);
+      if (status) send(ws, status);
+    }
     resumed.room.resendTrialStart(pid);
+    if (!resumed.room.isLocked) {
+      send(ws, { type: "LOBBY_DEADLINE", deadline: rooms.lobbyDeadline(pid), paid: studyConfig.payment.no_group.paid });
+    }
     resumed.room.broadcastLobbyState(); // everyone sees them as connected again
   }
 
@@ -183,7 +201,7 @@ wss.on("connection", (ws) => {
           send(ws, { type: "ERROR", message: "HELLO needs a participantId of 1-64 letters, digits, _ or -" });
           return;
         }
-        if (playerId === pid) return; // duplicate HELLO (e.g. React StrictMode double effect)
+        if (playerId === pid) return;
         if (playerId) {
           send(ws, { type: "ERROR", message: "This connection is already identified" });
           return;
@@ -193,7 +211,6 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      // Clients that skip HELLO get an anonymous, non-resumable identity
       if (!playerId) identify(`anon_${Math.random().toString(36).slice(2)}`);
       const pid = playerId!;
       const seen = participants.get(pid);
@@ -209,10 +226,16 @@ wss.on("connection", (ws) => {
             send(ws, { type: "ERROR", message: result.error });
             return;
           }
+          if ("ended" in result) {
+            // Study full (MAX_ROOMS reached, no open room)
+            participantsLog.write("turned_away", { participantId: pid, reason: result.ended.reason, roomsOpened: rooms.roomsOpened, maxRooms: live.maxRooms });
+            send(ws, { type: "SESSION_STATUS", status: "ended", ...result.ended });
+            return;
+          }
           send(ws, { type: "ASSIGN_ROOM", roomId: result.room.id });
           send(ws, { type: "ASSIGN_AGENT", agentId: result.agentId });
           sendAbortPolicy(ws);
-          // Re-send lobby state so this player sees the current roster
+          send(ws, { type: "LOBBY_DEADLINE", deadline: rooms.lobbyDeadline(pid), paid: studyConfig.payment.no_group.paid });
           result.room.broadcastLobbyState();
           return;
         }
@@ -257,7 +280,30 @@ wss.on("connection", (ws) => {
           return;
         }
 
-        // Final screen: hand out the completion URL to participants who finished
+        // Solo practice before the lobby
+        case "PRACTICE_JOIN": {
+          const result = rooms.startPractice(pid, sendToMe, meta);
+          if ("error" in result) { send(ws, { type: "ERROR", message: result.error }); return; }
+          if ("skipped" in result) {
+            send(ws, { type: "PRACTICE_STATUS", attempts: 0, passed: true, lastSoups: null, required: 0, deadline: null, skipped: true });
+            return;
+          }
+          if ("ended" in result) {
+            participantsLog.write("practice_timed_out", { participantId: pid });
+            send(ws, { type: "SESSION_STATUS", status: "ended", ...result.ended });
+            return;
+          }
+          if ("room" in result) {
+            send(ws, { type: "ASSIGN_ROOM", roomId: result.room.id });
+            send(ws, { type: "ASSIGN_AGENT", agentId: result.agentId });
+            sendAbortPolicy(ws);
+          }
+          const status = rooms.practiceStatus(pid);
+          if (status) send(ws, status);
+          return;
+        }
+
+        // Final screen
         case "STUDY_COMPLETE": {
           const finished = rooms.finishedStatus(pid);
           if (!finished) {
@@ -276,7 +322,6 @@ wss.on("connection", (ws) => {
           return;
         }
 
-        // Screen coordination
         case "TRIAL_READY":
           await rooms.roomOf(pid)?.markReady(pid);
           return;
@@ -288,7 +333,6 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
-    // Only act if this is still the participant's current socket (not one that was replaced)
     if (playerId && sessions.get(playerId) === ws) {
       sessions.delete(playerId);
       rooms.disconnect(playerId);
@@ -301,9 +345,8 @@ wss.on("connection", (ws) => {
 });
 
 // ----- Graceful shutdown -----
-// A stopped server must not strand anyone: everyone is told the study ended.
-// Seated participants get the room's abort (paid per PAY_ABORTED); participants
-// who never got a seat (e.g. still on consent) are told, but not paid.
+// Stopped server -> everyone is told the study ended.
+// Seated participants get paid per PAY_ABORTED)
 let shuttingDown = false;
 async function shutdown(signal: string) {
   if (shuttingDown) return;
@@ -312,7 +355,6 @@ async function shutdown(signal: string) {
   wss.close(); // stop accepting connections
   httpServer.close();
 
-  // Exit even if something below hangs (leaves time for the final backup)
   setTimeout(() => process.exit(0), 10_000).unref();
 
   const reason = "The study server was stopped.";
@@ -322,11 +364,10 @@ async function shutdown(signal: string) {
   participantsLog.close();
   await backup.flush(6000);
   for (const [pid, ws] of sessions) {
-    // Finished participants completed the game: no early ending for them
+    // Finished participants completed the game
     if (!seated.has(pid) && !rooms.finishedStatus(pid)) send(ws, { type: "SESSION_STATUS", status: "ended", ...unseatedEndInfo(reason) });
     ws.close(1001, "server shutting down"); // close handshake flushes queued messages
   }
-  // Give close frames a moment to go out
   await new Promise((r) => setTimeout(r, 500));
   process.exit(0);
 }
@@ -336,13 +377,12 @@ process.on("SIGTERM", () => void shutdown("SIGTERM"));
 checkStudyConfig();
 backup.start();
 
-// Compile the game in the sidecar now, not when the first room opens. Retries
-// while the sidecar is still starting; rooms work without it, just slower to open.
 void (async () => {
   for (let attempt = 1; attempt <= 20; attempt++) {
     try {
       const t = Date.now();
       await warmSidecar(roomOptions(1));
+      if (studyConfig.practice.enabled) await warmSidecar(practiceOptions());
       console.log(`[orchestrator] sidecar warmed up in ${Date.now() - t}ms`);
       return;
     } catch (e) {
@@ -356,6 +396,6 @@ void (async () => {
   console.warn("[orchestrator] could not warm up the sidecar; the first room will compile the game");
 })();
 httpServer.listen(PORT, HOST, () => {
-  console.log(`WS orchestrator listening on ws://${HOST ?? "127.0.0.1"}:${PORT} (${studyConfig.game}, ${PLAYERS_PER_ROOM} players/room)`);
-  console.log(admin.enabled ? `[admin] read-only admin view at http://127.0.0.1:${PORT}/admin` : "[admin] admin view off (set ADMIN_TOKEN to turn it on)");
+  console.log(`WS orchestrator listening on ws://${HOST ?? "127.0.0.1"}:${PORT} (${studyConfig.game}, ${live.groupSize} players/room)`);
+  console.log(admin.enabled ? `[admin] admin view at http://127.0.0.1:${PORT}/admin` : "[admin] admin view off (set ADMIN_TOKEN to turn it on)");
 });

@@ -914,3 +914,155 @@ KNOWN ISSUES (open, additions)
   a finisher who hadn't reached the completion screen gets "new" and ends as
   aborted (paid per PAY_ABORTED), not completed.
 - The debrief text in expTimeline.ts is still a placeholder.
+
+------------------------------------------------------------
+Session 2026-10-21 (cont.) — Lobby timeout, room cap, editable admin settings, end survey
+------------------------------------------------------------
+
+[feature] Lobby timeout: LOBBY_TIMEOUT_MS (default 600000 = 10 min; 0 = no
+      limit). A participant waiting in a lobby (group not started) longer than
+      that is ended with the new outcome no_group, paid per PAY_NO_GROUP
+      (default true) with NO_GROUP_COMPLETION_URL; the reason says how long we
+      waited. Checked every second against the current setting, so a change
+      applies to everyone already waiting. The server tells waiting
+      participants their deadline (LOBBY_DEADLINE, re-sent when it changes);
+      the waiting room shows a countdown and whether they'd be paid. Logged as
+      player_timed_out (room log).
+      Files: server/src/game/roomManager.ts, server/src/studyConfig.ts,
+             server/src/index.ts, shared/types.ts,
+             client/src/components/trials/WaitingRoom.tsx,
+             client/src/components/trials/EarlyEnd.tsx
+
+[feature] Room cap: MAX_ROOMS (empty = unlimited) = groups this server run may
+      open. Once reached, a newcomer who can't join an already open group is
+      ended as no_group ("The study is full…"), logged as turned_away
+      (participants log).
+      Files: server/src/game/roomManager.ts, server/src/index.ts
+
+[feature] Admin view can change settings (POST /admin/settings, token; JSON):
+      group size, minimum group size (empty = same as group size), lobby
+      timeout, rooms to open. Validated (group size 1-10; minimum <= size;
+      timeout 0-24 h; rooms >= 0); a new group size is first checked and
+      compiled by the sidecar, so a layout that can't seat it is refused
+      before anything changes. Changes apply at once, one at a time, are
+      logged (settings_changed: old/new values, resized rooms) and last until
+      the server restarts (the study file isn't touched; the page shows the
+      file's values). Group size applies to new groups and to groups still in
+      the lobby: GameRoom.resize() repacks seats to agent_0..k-1 (moved players
+      get ASSIGN_AGENT), re-creates the env (an env still being created for the
+      old size is discarded), never goes below the people already seated, and
+      the minimum follows the room's actual size. Started groups keep their
+      size and minimum. Each room now carries its own minimum (was global).
+      Page: Settings card (confirm before applying; edits aren't overwritten by
+      the refresh; Undo edits), room cards show "min k" and each waiting
+      player's lobby countdown, header shows timeout and rooms opened/cap.
+      Files: server/src/studyConfig.ts (live settings, validation),
+             server/src/admin.ts, server/src/admin.html, server/src/index.ts,
+             server/src/game/gameRoom.ts, server/src/game/roomManager.ts
+
+[feature] End survey screen (timeline type "survey"): scale, choice and
+      free-text questions from the timeline; required questions enforced;
+      answers in progress and start time kept across a refresh; logged as
+      survey_response { screenId, answers, durationMs }. The timeline now has
+      a pilot feedback survey after the game (instructions clarity, controls,
+      teamwork, enjoyment, played before, problems, comments). Removed the
+      empty placeholder EndSurvey.tsx.
+      Files: client/src/components/trials/Survey.tsx (new), client/types.ts,
+             client/src/components/engine/TrialEngine.tsx,
+             client/src/scripts/expTimeline.ts
+
+[feature] Layout cramped_room: the classic 2-player Overcooked-AI kitchen.
+      Files: sidecar/layouts/cramped_room.txt (new)
+
+[bug] Admin Settings: the lobby timeout field only accepted multiples of half
+      a minute (the browser silently refused e.g. 0.1 or 2.25); any value now.
+      Files: server/src/admin.html
+
+[test] New server/test/lobby.js (npm run test:lobby; own servers on :8098; in
+      test:all), 48 checks: timeout → no_group (paid, own URL), stays ended on
+      return; deadline on join and re-sent on change, applying to people
+      already waiting; 0 = no limit; settings endpoint 401/415/400/405 and 7
+      invalid values rejected without changing anything; group size 4 → 2
+      resizes a lobby room with a gap in its seats (agent_2 → agent_1, told via
+      ASSIGN_AGENT, controls agent_1 in the 2-agent env); a room with 3 seated
+      keeps 3 (and minimum 3) while a started room is untouched; minimum group
+      size; room cap turns a newcomer away until raised; logs; cramped_room
+      refuses group size 3 via the sidecar; default timeout 10 min.
+      test:all (8 suites) passed twice; sidecar 19/19.
+      Browser (headless Chrome): lobby countdown; admin form changed group size
+      3 → 1 while a participant waited → their game started; survey required
+      warnings, draft kept across a reload, survey_response logged; completion;
+      admin form set the timeout to 0.1 min → waiting participant got the
+      "couldn't place you in a group … paid" screen. No page errors.
+
+KNOWN ISSUES (open, additions)
+- Live settings are in memory: a server restart goes back to the study file.
+- A group size change re-creates the env of every lobby room; a group that
+  fills at that moment waits for the new env (about a second).
+
+------------------------------------------------------------
+Session 2026-10-21 (cont.) — Solo practice before the lobby; starting short at the lobby timeout
+------------------------------------------------------------
+
+[feature] Solo practice (PRACTICE=true): new timeline screen "practice"
+      before the waiting room. Each participant gets their own one-cook
+      kitchen (PRACTICE_LAYOUT, default cramped_room; room practice_k, its own
+      data log; not matched, not counted toward MAX_ROOMS). Attempts are normal
+      rounds of PRACTICE_HORIZON steps; after each, PRACTICE_STATUS says
+      whether it passed (served >= PRACTICE_MIN_SOUPS soups, default 1).
+      Unlimited retries until PRACTICE_TIME_LIMIT_MS from their first practice
+      (default 10 min; an attempt in progress may finish), then the study ends
+      with the new outcome practice_timeout (PAY_PRACTICE_TIMEOUT, default not
+      paid; PRACTICE_TIMEOUT_COMPLETION_URL). The lobby refuses anyone who
+      hasn't passed. Screens: intro (time available) → attempt (game screen,
+      "Practice: attempt n") → "Not quite yet" (soups served, tip, time left,
+      Try again) or "Practice complete" → lobby. Refresh-safe (mid-attempt
+      resumes; after a pass shows the pass); SESSION_STATUS resumed carries
+      kind practice/group, new carries practicePassed. With PRACTICE=false
+      the screen is skipped (PRACTICE_STATUS skipped), so one client timeline
+      works with either server setting. Logged: practice_result per attempt,
+      trial_end now records score and soups (all rooms), player_practice_passed
+      / player_practice_timeout. Instructions mention practice.
+      Files: server/src/game/roomManager.ts, server/src/game/gameRoom.ts (kind,
+             unlimited rounds, hooks incl. onTrialEnd), server/src/index.ts,
+             server/src/studyConfig.ts, shared/types.ts,
+             client/src/components/trials/Practice.tsx (new),
+             client/src/components/trials/GameTrial.tsx (label),
+             client/src/components/engine/TrialEngine.tsx, client/types.ts,
+             client/src/components/trials/EarlyEnd.tsx,
+             client/src/components/trials/OvercookedView.tsx ("Score" when solo),
+             client/src/scripts/expTimeline.ts
+
+[feature] Starting short (dynamic team size at group formation):
+      MIN_START_SIZE (live; admin "Smallest group to start at timeout"; empty =
+      never). When someone in a waiting group reaches the lobby timeout and the
+      group has at least that many people, the group is resized to them and
+      starts (room_resized reason lobby_timeout); otherwise they're ended as
+      no_group. A full group waiting to start never times out.
+      Files: server/src/game/roomManager.ts, server/src/studyConfig.ts,
+             server/src/admin.html, server/src/admin.ts
+
+[feature] Admin view: stages "practice" and "practice passed"; a Practice
+      table (status, attempts done, soups last attempt, time left) instead of
+      a card per practice room; group room count excludes practice rooms.
+      Files: server/src/admin.ts, server/src/admin.html
+
+[test] New server/test/practice.js (npm run test:practice; own servers on
+      :8099; in test:all), 39 checks over four configurations: lobby refused
+      before practice; own room; refresh mid-attempt resumes; failed attempt;
+      scripted attempt cooks and serves in cramped_room → passed, room freed,
+      lobby allowed; practice logs; never-started and over-time attempts →
+      practice_timeout (not paid), still ended on return; MIN_START_SIZE=2:
+      2 of 3 start as a group of 2 at the 3 s timeout (not before), a lone
+      player times out; setting validation; PRACTICE=false → skipped.
+      test:all (9 suites) passed twice; sidecar 19/19.
+      Browser (headless Chrome, real key presses): practice intro → idle
+      attempt → "Not quite yet" → attempt 2 cooked and served a soup →
+      "Practice complete" → lobby → started short as a group of 1 at the 4 s
+      timeout (MIN_START_SIZE=1) → game → survey. Admin Practice table showed
+      the attempt in progress. No page errors.
+
+KNOWN ISSUES (open, additions)
+- Practice progress is in memory: after a server restart, participants who
+  passed practice but hadn't joined a group are sent back to practice.
+- PRACTICE_HORIZON uses the same TICK_MS as the game.

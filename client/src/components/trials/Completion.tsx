@@ -1,13 +1,6 @@
 {/*
 Final screen for participants who finished: thanks them and sends them to the
-completion URL (e.g. Prolific). The URL comes from the server (STUDY_COMPLETE →
-COMPLETION), which gives it only to participants it saw finish every round, so
-it never ships in the client bundle. Asks again on every reconnect until it has
-an answer; a URL once received is kept (context/completion.ts).
-
-With a URL: redirects after studyConfig.autoRedirectMs (or on the button).
-Without one (server has no record of them finishing, or no URL configured):
-asks them to contact the researcher.
+completion URL (e.g. Prolific). 
 
 Created by: Elizabeth Mieczkowski, Updated: 10/2026
 */}

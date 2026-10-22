@@ -1,34 +1,6 @@
 {/*
 Main component that runs the trial engine, rendering different trial types.
 
-Resuming after a refresh or reconnect:
-- The current timeline index is kept in sessionStorage, so a refresh returns
-  to the same screen.
-- When the server answers HELLO with SESSION_STATUS, the index is corrected:
-    resumed + running      → the timeline's game entry for the trial in progress
-    resumed + not running  → just past the last completed game trial (or the
-                             waiting room if none completed yet)
-
-    finished               → just past the last game screen (they played every round)
-
-Finishing: the timeline's "completion" screen asks the server for the
-completion URL (Completion.tsx). The server-unreachable check below only
-applies from the waiting room through the last game screen.
-
-Ending early (EarlyEnd screen; saved in sessionStorage so a refresh stays there):
-    SESSION_STATUS ended            → as the server says (outcome, paid, URL)
-    SESSION_STATUS new while past the waiting room
-                                    → aborted: the server restarted and lost the
-                                      group; we never re-form groups mid-study
-    server unreachable for studyConfig.serverLostTimeoutMs on a multiplayer screen
-                                    → aborted
-  For the last two the server can't say whether to pay, so the client uses the
-  ABORT_POLICY the server sent when the participant was seated (none saved =
-  never seated = not paid).
-
-Data (DataLogger → server participants log): screen_enter each time a screen
-is shown (incl. after a refresh), and early_end when the study ends early.
-
 Edited by: Elizabeth Mieczkowski, Updated: 09/2026
 */}
 
@@ -44,6 +16,8 @@ import { GameTrial } from "../trials/GameTrial";
 import { InstructionsScreen } from "../trials/InstructionsScreen";
 import { EarlyEnd } from "../trials/EarlyEnd";
 import { Completion } from "../trials/Completion";
+import { Survey } from "../trials/Survey";
+import { Practice } from "../trials/Practice";
 import { loadCompletion } from "../../context/completion";
 import { studyConfig } from "../../scripts/studyConfig";
 import { loadAbortPolicy } from "../../context/abortPolicy";
@@ -85,6 +59,13 @@ function resumeIndex(timeline: TrialTimeline, status: SessionStatus, current: nu
   const gameIdx = timeline.flatMap((t, i) => (t.type === "game" ? [i] : []));
   const waitingIdx = timeline.findIndex((t) => t.type === "waiting-room");
 
+  const practiceIdx = timeline.findIndex((t) => t.type === "practice");
+  if (status.status === "resumed" && status.kind === "practice") return practiceIdx >= 0 ? practiceIdx : current;
+  if (status.status === "new" && practiceIdx >= 0 && status.practicePassed === false &&
+      current > practiceIdx && (waitingIdx < 0 || current <= waitingIdx)) {
+    return practiceIdx;
+  }
+
   if (status.status === "finished") {
     const last = lastGameIndex(timeline);
     return last >= 0 ? Math.min(timeline.length - 1, Math.max(current, last + 1)) : current;
@@ -107,7 +88,7 @@ function firstServerIndex(timeline: TrialTimeline): number {
 }
 
 /** Screens that need the server; show a banner on them while reconnecting. */
-const NEEDS_SERVER = new Set<TrialConfig["type"]>(["waiting-room", "game", "completion"]);
+const NEEDS_SERVER = new Set<TrialConfig["type"]>(["practice", "waiting-room", "game", "completion"]);
 
 export function TrialEngine({ timeline }: Props) {
   const { sessionStatus, connected } = useSocket();
@@ -115,6 +96,7 @@ export function TrialEngine({ timeline }: Props) {
   const [earlyEnd, setEarlyEnd] = useState<EndInfo | null>(loadEarlyEnd);
   const currentTrial: TrialConfig = timeline[currentIndex];
   const serverIdx = firstServerIndex(timeline);
+  const waitingIdx = timeline.findIndex((t) => t.type === "waiting-room");
   const lastGameIdx = lastGameIndex(timeline);
   // From the waiting room through the last game, the participant's study depends
   // on the server (after that they have finished; losing the server can't undo that)
@@ -156,7 +138,7 @@ export function TrialEngine({ timeline }: Props) {
       endEarly({ outcome, reason, paid, completionUrl });
     } else if (sessionStatus.status === "new" && currentIndex > lastGameIdx && lastGameIdx >= 0 && loadCompletion()) {
       // Server restarted after giving us our completion link: nothing to do
-    } else if (sessionStatus.status === "new" && serverIdx >= 0 && currentIndex > serverIdx) {
+    } else if (sessionStatus.status === "new" && waitingIdx >= 0 && currentIndex > waitingIdx) {
       // We were in a group, but the server no longer knows us: it restarted
       endEarly({ outcome: "aborted", reason: "The study server was restarted.", ...loadAbortPolicy() });
     } else {
@@ -239,6 +221,12 @@ function renderTrial(currentTrial: TrialConfig, currentIndex: number, advance: (
         />
       );
     }
+
+    case "practice":
+      return <Practice key={currentTrial.id} config={currentTrial} onNext={advance} />;
+
+    case "survey":
+      return <Survey key={currentTrial.id} config={currentTrial} onNext={advance} />;
 
     case "completion":
       return <Completion key={currentTrial.id} config={currentTrial} />;

@@ -1,34 +1,20 @@
 {/*
 Game lifecycle and sidecar interaction for ONE room (one group of players).
-Runs either game (options.game): MPE simple_spread or Overcooked (classic
-onion soup, 1-10 cooks); the sidecar does the game-specific work.
 
-- Owns agent seats (agent_0..agent_{N-1}); the server, not the client, decides
-  which agent a player controls.
-- Owns its own ready set; starts a trial when every seat is filled and ready.
-- Runs a serialized tick loop (next step is scheduled only after the previous
-  sidecar call returns, so steps can never overlap or arrive out of order).
-- Resets the env after each trial so the next round starts from step 0.
-- After options.rounds rounds the room is done (isDone): it starts no more
-  trials and tells the manager (onDone), which marks everyone seated as
-  finished.
-- Actions: MPE applies each player's latest held action every tick.
-  Overcooked is strictly one step per key press: presses are queued per
-  player (up to MAX_QUEUED_PRESSES) and one is applied per tick; with no press
-  the agent stays. Idle/disconnected agents get the spec's noop (MPE noop,
-  Overcooked stay) and, in Overcooked, stay on the grid.
+- Agent seats (agent_0..agent_{N-1})
+- Ready set: starts a trial when every seat is filled and ready.
+- Runs a serialized tick loop (next step is scheduled after prev. sidecar call).
+- Resets env after each trial (next round starts from step 0).
+- After options.rounds rounds the room is done (isDone).
 - Holds a disconnected player's seat (markDisconnected) so they can come back
-  (reattach); the RoomManager decides how long to hold it.
-- Writes every event and tick to a per-room JSONL data log (DataLog),
-  including each episode's starting state (trial_start.initialState) and
-  the study/code info (room_created.study).
-- snapshot(): its current status for the admin view (read-only).
-- abort(): if the room can't continue (environment never starts or is lost
-  mid-trial, the group fell below MIN_GROUP_SIZE, or the server is shutting
-  down), ends the study for the whole group with SESSION_STATUS ended/aborted;
-  payment follows the study config (PAY_ABORTED).
+  (reattach); RoomManager decides how long to hold it.
+- Writes every event and tick to a per-room JSONL data log (DataLog).
+- resize(): change group size while still in lobby (admin view).
+- snapshot(): current status for admin view (read-only).
+- abort(): if the room can't continue (env never starts or is lost, group below 
+  MIN_GROUP_SIZE, or server is shutting down), ends the study and PAY_ABORTED.
 
-Created by: Elizabeth Mieczkowski, Updated: 09/2026
+Created by: Elizabeth Mieczkowski, Updated: 10/2026
 */}
 import { envCreate, envSpec, envReset, envStep, envClose } from "./sidecarClient";
 import { DataLog } from "./dataLog";
@@ -57,13 +43,27 @@ export type GameRoomOptions = {
   game: GameName;
   seed: number;
   num_agents: number;
+  /** Abort the started group if drop-outs leave fewer players than this */
+  minGroupSize: number;
   horizon: number;
   /** MPE only */
   num_landmarks?: number;
   /** Overcooked only: sidecar/layouts/<layout>.txt */
   layout?: string;
-  /** Rounds to play; after the last one the room is done */
-  rounds: number;
+  /** Rounds to play; after the last one the room is done (null = no limit, e.g. practice) */
+  rounds: number | null;
+  /** "group" = a study group (lobby, game); "practice" = one participant's solo practice kitchen */
+  kind: "group" | "practice";
+};
+
+/** What the room tells its manager. */
+export type RoomHooks = {
+  /** After abort() has notified players; the manager frees the room. */
+  onAbort?: (reason: string) => void;
+  /** Once the last round has ended; the manager marks the players finished. */
+  onDone?: () => void;
+  /** After every trial (soups: Overcooked deliveries this trial). */
+  onTrialEnd?: (result: { trial: number; score: number; soups: number | null }) => void;
 };
 
 type Seat = {
@@ -74,6 +74,7 @@ type Seat = {
 };
 
 const DISCONNECTED_SEND = () => {};
+const agentNum = (a: AgentID) => Number(a.split("_")[1]);
 
 type TrialStartMsg = Extract<ServerEvent, { type: "TRIAL_START" }>;
 
@@ -103,12 +104,15 @@ export async function warmSidecar(options: GameRoomOptions) {
 
 export class GameRoom {
   readonly id: RoomID;
-  readonly options: GameRoomOptions;
+  /** Changes only through resize() (group size), before the group starts */
+  options: GameRoomOptions;
   envId: string | null = null;
   spec: TrialSpec | null = null;
 
   /** In-flight or completed env init; reset to null on failure so it can be retried. */
   private initPromise: Promise<void> | null = null;
+  /** Bumped when the env must be re-created (resize); an older init's env is discarded */
+  private envGen = 0;
 
   private seats = new Map<PlayerID, Seat>();
   private readyPlayers = new Set<PlayerID>();
@@ -149,10 +153,7 @@ export class GameRoom {
   constructor(
     id: RoomID,
     options: GameRoomOptions,
-    /** Called after abort() has notified players; the manager frees the room. */
-    private onAbort: (reason: string) => void = () => {},
-    /** Called once the last round has ended; the manager marks the players finished. */
-    private onDone: () => void = () => {},
+    private hooks: RoomHooks = {},
   ) {
     this.id = id;
     this.options = options;
@@ -210,7 +211,7 @@ export class GameRoom {
    * Free a seat for good. reason: "left" (lobby timeout) or "dropped" (gave up
    * waiting for a disconnected player after the group was locked).
    */
-  removePlayer(playerId: PlayerID, reason: "left" | "dropped" | "finished" = "left") {
+  removePlayer(playerId: PlayerID, reason: "left" | "dropped" | "finished" | "timed_out" | "practice_passed" | "practice_timeout" = "left") {
     const seat = this.seats.get(playerId);
     if (!seat) return;
     this.seats.delete(playerId);
@@ -301,30 +302,83 @@ export class GameRoom {
   /** Create the sidecar env once; if that fails, the next call tries again. */
   private ensureReady(): Promise<void> {
     if (!this.initPromise) {
-      this.initPromise = this.init().catch((e) => {
-        this.initPromise = null;
+      const p: Promise<void> = this.init().catch((e) => {
+        if (this.initPromise === p) this.initPromise = null; // a resize may have replaced it already
         throw e;
       });
+      this.initPromise = p;
     }
     return this.initPromise;
   }
 
   private async init() {
+    const gen = this.envGen;
     let envId: string | null = null;
+    let spec: TrialSpec, resetState: SidecarState;
     try {
       const create = await envCreate(createParams(this.options));
       envId = create.env_id as string;
-      const spec = await envSpec(envId);
-      this.resetState = (await envReset(envId)).state;
-      this.envId = envId;
-      this.spec = spec;
+      spec = await envSpec(envId);
+      resetState = (await envReset(envId)).state;
     } catch (e) {
       // Don't leak a half-initialized env in the sidecar
       if (envId) await envClose(envId).catch(() => {});
       throw e;
     }
-    // Room may have been disposed while we were waiting on the sidecar
-    if (this.disposed) await envClose(envId).catch(() => {});
+    // Room disposed, or resized, while we were waiting on the sidecar: this env is not needed
+    if (this.disposed || gen !== this.envGen) {
+      await envClose(envId).catch(() => {});
+      return;
+    }
+    this.envId = envId;
+    this.spec = spec;
+    this.resetState = resetState;
+  }
+
+  /**
+   * Change the group size while the group is still in the lobby (admin view).
+   * Can't go below the number of players already seated (the room then gets
+   * exactly that many). Seats are repacked to agent_0..agent_{k-1} (players
+   * whose agent changes get ASSIGN_AGENT) and the env is re-created.
+   * Returns the new capacity, or null if the group has already started.
+   */
+  resize(groupSize: number, minimumFor: (size: number) => number, reason: "admin" | "lobby_timeout" = "admin"): number | null {
+    if (this.locked || this.disposed || this.running) return null;
+    const capacity = Math.max(groupSize, this.seats.size);
+    // The minimum follows the room's actual size (e.g. "same as group size" = 3 if it keeps 3)
+    const minimum = minimumFor(capacity);
+    if (capacity === this.capacity) {
+      this.options = { ...this.options, minGroupSize: minimum };
+      return capacity;
+    }
+    const from = this.capacity;
+    this.options = { ...this.options, num_agents: capacity, minGroupSize: minimum };
+
+    // Repack seats in their current order so agent ids stay within 0..capacity-1
+    const moved: Record<string, { from: AgentID; to: AgentID }> = {};
+    const ordered = [...this.seats.entries()].sort(([, a], [, b]) => agentNum(a.agentId) - agentNum(b.agentId));
+    ordered.forEach(([pid, seat], i) => {
+      const to = `agent_${i}` as AgentID;
+      if (seat.agentId !== to) {
+        moved[pid] = { from: seat.agentId, to };
+        seat.agentId = to;
+        seat.send({ type: "ASSIGN_AGENT", agentId: to });
+      }
+    });
+
+    // Re-create the env for the new size (an init in flight for the old size is discarded)
+    this.envGen++;
+    const old = this.envId;
+    this.envId = null;
+    this.spec = null;
+    this.resetState = null;
+    this.initPromise = null;
+    if (old) void envClose(old).catch(() => {});
+    this.log.write("room_resized", { from, to: capacity, minGroupSize: minimum, moved, reason });
+    this.ensureReady().catch((e) => console.error(`[room ${this.id}] init after resize failed:`, e?.message ?? e));
+    this.broadcastLobbyState();
+    void this.tryStart(); // now full (and everyone ready)? start
+    return capacity;
   }
 
   /**
@@ -336,7 +390,11 @@ export class GameRoom {
     if (this.running || this.starting || this.disposed || this.done || !this.allSeatedAndReady()) return;
     this.starting = true;
     try {
-      await this.ensureReady();
+      // Wait for the env; if a resize replaced it meanwhile, wait for the new one
+      for (let gen = -1; gen !== this.envGen;) {
+        gen = this.envGen;
+        await this.ensureReady();
+      }
       // Players can be ready again before the post-trial reset returns; a second
       // reset then would skip an episode and could log the wrong initialState
       if (this.resetting) await this.resetting;
@@ -495,15 +553,18 @@ export class GameRoom {
     this.currentTrialStart = null;
     if (this.loopTimer) { clearTimeout(this.loopTimer); this.loopTimer = null; }
     this.clearActions();
-    this.log.write("trial_end", { trial: this.trialCount, episodeId, reason, players: this.seatSummary() });
+    const reward = this.spec?.game === "overcooked" ? this.spec.delivery_reward : null;
+    const soups = reward ? Math.round(this.score / reward) : null;
+    this.log.write("trial_end", { trial: this.trialCount, episodeId, reason, score: this.score, soups, players: this.seatSummary() });
 
     this.broadcast({ type: "TRIAL_END", trialId: episodeId });
+    this.hooks.onTrialEnd?.({ trial: this.trialCount, score: this.score, soups });
 
-    if (this.trialCount >= this.options.rounds) {
+    if (this.options.rounds !== null && this.trialCount >= this.options.rounds) {
       // Last round played: the group is finished (no reset needed)
       this.done = true;
       this.log.write("room_finished", { rounds: this.trialCount, players: this.seatSummary() });
-      this.onDone();
+      this.hooks.onDone?.();
       this.broadcastLobbyState();
       return;
     }
@@ -533,7 +594,7 @@ export class GameRoom {
     this.log.write("room_aborted", { reason, trial: this.trialCount, running: this.running, players: this.seatSummary() });
     this.running = false;
     this.broadcast({ type: "SESSION_STATUS", status: "ended", ...endInfo("aborted", reason) });
-    this.onAbort(reason);
+    this.hooks.onAbort?.(reason);
   }
 
   /** Stop everything and free the sidecar env. */
@@ -556,6 +617,7 @@ export class GameRoom {
     const st = this.stepStats;
     return {
       id: this.id,
+      kind: this.options.kind,
       options: this.options,
       status: this.disposed ? "closed" : this.running ? "playing" : this.done ? "finished" : this.starting ? "starting" : this.locked ? "between rounds" : "lobby",
       createdAt: this.createdAt,
@@ -626,6 +688,11 @@ export class GameRoom {
       maxParticipants: this.capacity,
     };
     this.broadcast({ type: "STATE_UPDATE", state: lobby, tick: 0, serverTime: Date.now() });
+  }
+
+  /** Send to one seated player (no-op while they are disconnected). */
+  sendTo(playerId: PlayerID, msg: ServerEvent) {
+    this.seats.get(playerId)?.send(msg);
   }
 
   /** Send to everyone currently in this room. */

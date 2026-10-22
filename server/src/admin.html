@@ -1,8 +1,9 @@
 <!doctype html>
 <!--
-Tandem admin view (read-only). Served by the game server at /admin; polls
-/admin/state every 2 s with the admin token (asked once, kept for this tab;
-#token=... in the URL also works). See src/admin.ts.
+Tandem admin view. Served by the game server at /admin; polls /admin/state
+every 2 s with the admin token (asked once, kept for this tab; #token=... in
+the URL also works). The Settings form posts to /admin/settings (group size,
+minimum group size, lobby timeout, rooms to open). See src/admin.ts.
 -->
 <html lang="en">
 <head>
@@ -41,6 +42,11 @@ Tandem admin view (read-only). Served by the game server at /admin; polls
   input { font: inherit; padding: 6px 8px; width: 100%; margin: 8px 0; }
   .scroll { max-height: 420px; overflow: auto; }
   code { font-size: 12px; }
+  .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 4px 16px; }
+  .fields label { display: block; font-weight: 600; font-size: 13px; }
+  .fields .hint { font-weight: 400; font-size: 12px; color: var(--muted); }
+  #settings button { font: inherit; padding: 6px 14px; margin-right: 8px; cursor: pointer; }
+  #settingsMsg { margin-left: 4px; }
 </style>
 </head>
 <body>
@@ -62,6 +68,39 @@ Tandem admin view (read-only). Served by the game server at /admin; polls
 
     <h2>Participants by stage</h2>
     <div id="funnel" class="chips"></div>
+
+    <h2>Settings <span class="muted">(take effect immediately and last until the server restarts; the study file is not changed)</span></h2>
+    <form id="settings" class="card">
+      <div class="fields">
+        <label>Group size
+          <input name="groupSize" type="number" min="1" max="10" step="1" required>
+          <span class="hint" data-hint="groupSize"></span></label>
+        <label>Minimum group size
+          <input name="minGroupSize" type="number" min="1" step="1" placeholder="same as group size">
+          <span class="hint" data-hint="minGroupSize"></span></label>
+        <label>Smallest group to start at timeout
+          <input name="minStartSize" type="number" min="1" step="1" placeholder="never start short">
+          <span class="hint" data-hint="minStartSize"></span></label>
+        <label>Lobby timeout (minutes)
+          <input name="lobbyTimeoutMin" type="number" min="0" step="any" placeholder="0 = no limit">
+          <span class="hint" data-hint="lobbyTimeoutMs"></span></label>
+        <label>Rooms (groups) to open
+          <input name="maxRooms" type="number" min="0" step="1" placeholder="unlimited">
+          <span class="hint" data-hint="maxRooms"></span></label>
+      </div>
+      <p class="muted" style="margin: 4px 0 10px">
+        Group size applies to new groups and to groups still in the lobby (a waiting group never shrinks below the
+        people already in it); groups that have started keep theirs. When someone in a waiting group reaches the
+        lobby timeout, the group starts with the people there if it has at least the "smallest group to start";
+        otherwise they're ended as "no group". A new lobby timeout applies to everyone already waiting. Once the number of rooms is reached, newcomers who can't join an open group are told the study is full.
+      </p>
+      <button type="submit">Apply</button><button type="button" id="settingsUndo">Undo edits</button><span id="settingsMsg"></span>
+    </form>
+
+    <div id="practiceSection" style="display:none">
+      <h2>Practice <span class="muted" id="practiceRule"></span></h2>
+      <div class="card scroll"><table id="practice"></table></div>
+    </div>
 
     <h2>Rooms</h2>
     <div id="rooms" class="rooms"></div>
@@ -87,6 +126,9 @@ const STATUS_CLASS = { playing: "ok", lobby: "accent", starting: "warn", "betwee
 
 let token = null;
 let timer = null;
+let lastState = null;
+/** The form has edits not yet applied: don't overwrite them on refresh */
+let settingsDirty = false;
 
 function initToken() {
   const m = /token=([^&]+)/.exec(location.hash);
@@ -125,11 +167,78 @@ async function poll() {
   timer = setTimeout(poll, POLL_MS);
 }
 
+const form = $("settings");
+const field = (name) => form.elements.namedItem(name);
+const minutes = (ms) => Math.round((ms / 60000) * 100) / 100;
+const describe = { groupSize: (v) => `${v}`, minGroupSize: (v) => v ?? "same as group size", minStartSize: (v) => v ?? "never start short",
+  lobbyTimeoutMs: (v) => v ? `${minutes(v)} min` : "no limit", maxRooms: (v) => v ?? "unlimited" };
+
+form.addEventListener("input", () => { settingsDirty = true; $("settingsMsg").textContent = "Not applied yet"; $("settingsMsg").className = "warn"; });
+$("settingsUndo").addEventListener("click", () => { settingsDirty = false; if (lastState) fillSettings(lastState.settings); $("settingsMsg").textContent = ""; });
+
+function fillSettings(st) {
+  const c = st.current;
+  field("groupSize").value = c.groupSize;
+  field("minGroupSize").value = c.minGroupSize ?? "";
+  field("minStartSize").value = c.minStartSize ?? "";
+  field("lobbyTimeoutMin").value = minutes(c.lobbyTimeoutMs);
+  field("maxRooms").value = c.maxRooms ?? "";
+  for (const el of form.querySelectorAll("[data-hint]")) {
+    const k = el.dataset.hint;
+    const fromFile = describe[k](st.file[k]);
+    el.textContent = k === "maxRooms" ? `${st.roomsOpened} opened so far · file: ${fromFile}` : `file: ${fromFile}`;
+  }
+}
+
+function readForm() {
+  const num = (name) => { const v = field(name).value.trim(); return v === "" ? null : Number(v); };
+  return {
+    groupSize: num("groupSize"),
+    minGroupSize: num("minGroupSize"),
+    minStartSize: num("minStartSize"),
+    lobbyTimeoutMs: Math.round((num("lobbyTimeoutMin") ?? 0) * 60000),
+    maxRooms: num("maxRooms"),
+  };
+}
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const patch = readForm();
+  const current = lastState?.settings.current ?? {};
+  const changed = Object.keys(patch).filter((k) => patch[k] !== current[k]);
+  if (!changed.length) { settingsDirty = false; $("settingsMsg").textContent = "Nothing to change"; $("settingsMsg").className = "muted"; return; }
+  const summary = changed.map((k) => `${k}: ${describe[k](current[k])} → ${describe[k](patch[k])}`).join("\n");
+  if (!confirm(`Apply these changes now?\n\n${summary}`)) return;
+  $("settingsMsg").textContent = "Applying…"; $("settingsMsg").className = "muted";
+  try {
+    const r = await fetch(location.pathname.replace(/\/?$/, "/") + "settings", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(Object.fromEntries(changed.map((k) => [k, patch[k]]))),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
+    settingsDirty = false;
+    const resized = Object.entries(body.resizedRooms ?? {}).map(([id, n]) => `${id} → ${n}`).join(", ");
+    $("settingsMsg").textContent = `Applied${resized ? ` (lobby rooms: ${resized})` : ""}.`;
+    $("settingsMsg").className = "ok";
+    poll();
+  } catch (err) {
+    $("settingsMsg").textContent = `Not applied: ${err.message}`;
+    $("settingsMsg").className = "bad";
+  }
+});
+
 function render(s) {
+  lastState = s;
+  if (!settingsDirty) fillSettings(s.settings);
   $("app").style.display = "block";
   const st = s.study;
   $("title").textContent = `${st.studyName ?? "(unnamed study)"} · ${st.condition ?? "(no condition)"}`;
+  const lobbyLimit = st.lobbyTimeoutMs ? `lobby timeout ${minutes(st.lobbyTimeoutMs)} min` : "no lobby timeout";
+  const roomCap = st.maxRooms === null ? "rooms unlimited" : `rooms ${s.settings.roomsOpened}/${st.maxRooms}`;
   $("subtitle").innerHTML = esc(`${st.game}${st.layout ? ` (${st.layout})` : ""} · ${st.playersPerRoom} per room, abort below ${st.minGroupSize} · ` +
+    `${lobbyLimit} · ${roomCap} · ${st.rounds} round(s) · ` +
     `${st.horizon} steps × ${st.tickMs} ms · seed ${st.seed}${st.seedPerRoom ? " + room" : ""} · ` +
     `code ${(st.code?.commit ?? "?").slice(0, 8)}${st.code?.dirty ? " (uncommitted changes)" : ""}`) +
     ` · <span class="muted">updated ${esc(clock(s.now))}</span>`;
@@ -142,7 +251,7 @@ function render(s) {
     : `<span class="badge ok" title="${esc(b.target)}">backup OK · last ${esc(ago(b.lastSuccessAt, s.now))}</span>`;
   $("health").innerHTML = `${sidecarBadge} ${backupBadge} <span class="badge muted">up ${esc(dur(s.server.uptimeS * 1000))} · ${esc(s.server.memoryMB)} MB</span>`;
 
-  const order = ["before lobby", "lobby", "playing", "after a round", "finished game", "completed"];
+  const order = ["before lobby", "practice", "practice passed", "lobby", "playing", "after a round", "finished game", "completed"];
   const stages = Object.entries(s.counts.byStage).sort(([a], [b]) => {
     const ia = order.indexOf(a), ib = order.indexOf(b);
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
@@ -152,6 +261,26 @@ function render(s) {
     `<div class="chip"><b>${esc(s.counts.rooms)}</b>rooms open</div>`;
 
   $("rooms").innerHTML = s.rooms.length ? s.rooms.map((r) => roomCard(r, s.now)).join("") : `<div class="muted">No rooms open.</div>`;
+
+  const pr = st.practice;
+  $("practiceSection").style.display = pr?.enabled ? "block" : "none";
+  if (pr?.enabled) {
+    $("practiceRule").textContent = `(${pr.layout}, pass = ${pr.minSoups} soup${pr.minSoups === 1 ? "" : "s"} in one attempt, ` +
+      `${pr.timeLimitMs ? `time limit ${minutes(pr.timeLimitMs)} min` : "no time limit"})`;
+    const roomOf = new Map(s.practiceRooms.map((r) => [r.seats[0]?.participantId, r]));
+    const rows = s.participants.filter((p) => p.practice && (p.stage === "practice" || p.stage === "practice passed"));
+    $("practice").innerHTML = rows.length
+      ? `<tr><th>Participant</th><th>Status</th><th>Attempts done</th><th>Soups last attempt</th><th>Time left</th></tr>` +
+        rows.map((p) => {
+          const r = roomOf.get(p.participantId);
+          const status = p.practice.passed ? `<span class="ok">passed</span>`
+            : r?.status === "playing" ? `playing (step ${esc(r.step)}/${esc(r.horizon)})` : "between attempts";
+          return `<tr><td><span class="dot" style="background:${p.connected ? "var(--ok)" : "var(--line)"}"></span><code>${esc(p.participantId)}</code></td>
+            <td>${status}</td><td>${esc(p.practice.attempts)}</td><td>${esc(p.practice.lastSoups ?? "–")}</td>
+            <td>${p.practice.timeLeftMs != null ? esc(dur(p.practice.timeLeftMs)) : "–"}</td></tr>`;
+        }).join("")
+      : `<tr><td class="muted">Nobody is practicing right now.</td></tr>`;
+  }
 
   $("participants").innerHTML = `<tr><th>Participant</th><th>Stage</th><th>Room</th><th>Cook</th><th>Last screen</th><th>Last seen</th><th>Ended</th></tr>` +
     s.participants.map((p) => `<tr>
@@ -178,7 +307,7 @@ function roomCard(r, now) {
       <b>${esc(r.id)}</b>
       <span class="badge ${STATUS_CLASS[r.status] ?? ""}">${esc(r.status)}</span>
     </div>
-    <div class="muted">${esc(r.seats.length)}/${esc(r.capacity)} seated · round ${esc(r.trial)} of ${esc(r.rounds)} · ${esc(r.trialsCompleted)} done · opened ${esc(ago(r.createdAt, now))} · seed ${esc(r.options.seed)}</div>
+    <div class="muted">${esc(r.seats.length)}/${esc(r.capacity)} seated (min ${esc(r.minGroupSize)}) · round ${esc(r.trial)} of ${esc(r.rounds)} · ${esc(r.trialsCompleted)} done · opened ${esc(ago(r.createdAt, now))} · seed ${esc(r.options.seed)}</div>
     ${playing ? `<div class="bar"><div style="width:${pct}%"></div></div>
       <div>step ${esc(r.step)} / ${esc(r.horizon)} · ${esc(dur(now - r.trialStartedAt))} elapsed${r.score !== null ? ` · <b>score ${esc(r.score)}</b>` : ""}</div>
       <div class="muted">step latency ${lat ? `${esc(lat.mean)} ms avg, ${esc(lat.max)} max` : "–"} · <span class="${r.overruns ? "warn" : ""}">${esc(r.overruns)} overruns</span></div>` : ""}
@@ -187,7 +316,7 @@ function roomCard(r, now) {
       <tr><th>Cook</th><th>Participant</th><th>Status</th></tr>
       ${seats.map((x) => `<tr><td>${esc(cook(x.agentId))}</td><td><code>${esc(x.participantId)}</code></td>
         <td>${x.connected ? `<span class="ok">connected</span>` : `<span class="warn">disconnected${x.seatHeldForMs != null ? ` · seat held ${esc(Math.ceil(x.seatHeldForMs / 1000))}s` : ""}</span>`}
-        ${!playing && x.ready ? ` · ready` : ""}</td></tr>`).join("")}
+        ${!playing && x.ready ? ` · ready` : ""}${x.lobbyTimeoutInMs != null ? ` <span class="muted">· gives up in ${esc(dur(x.lobbyTimeoutInMs))}</span>` : ""}</td></tr>`).join("")}
     </table>
   </div>`;
 }

@@ -57,7 +57,7 @@ export function OvercookedView({ socket, spec, state, agentId }: Props) {
 
       <div style={{ width: 280, display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={panel}>
-          <div style={{ fontSize: 14, opacity: 0.75 }}>Team score</div>
+          <div style={{ fontSize: 14, opacity: 0.75 }}>{spec.num_agents === 1 ? "Score" : "Team score"}</div>
           <div style={{ fontSize: "2rem", fontWeight: 700, lineHeight: 1.1 }}>{score}</div>
           <div style={{ fontSize: 14, opacity: 0.75 }}>{served} soup{served === 1 ? "" : "s"} served</div>
           <div style={{ minHeight: 22, color: "#16a34a", fontWeight: 600 }}>{flash}</div>

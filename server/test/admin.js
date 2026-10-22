@@ -75,7 +75,7 @@ function client(pid) {
 
   const srv = startServer();
   await srv.ready;
-  check(srv.out.includes("read-only admin view at"), "startup prints the admin URL");
+  check(srv.out.includes("[admin] admin view at"), "startup prints the admin URL");
 
   // 2. Auth and routes
   check((await get("/admin/state")).status === 401, "no token → 401");
@@ -83,7 +83,7 @@ function client(pid) {
   const page = await get("/admin");
   check(page.status === 200 && (await page.text()).includes("Tandem admin"), "GET /admin serves the page (no token needed; it holds no data)");
   check((await get("/nothing")).status === 404, "other paths → 404");
-  check((await fetch(BASE + "/admin/state", { method: "POST", headers: { Authorization: `Bearer ${TOKEN}` } })).status === 405, "POST → 405 (read-only)");
+  check((await fetch(BASE + "/admin/state", { method: "POST", headers: { Authorization: `Bearer ${TOKEN}` } })).status === 405, "POST /admin/state → 405");
 
   let s = await state();
   check(s.study.game === "overcooked" && s.study.playersPerRoom === 2 && s.study.horizon === 100 && s.study.tickMs === 100, "study settings reported");

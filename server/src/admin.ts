@@ -1,8 +1,15 @@
 {/*
-Read-only admin view: what is happening on this server right now.
+Admin view: what is happening on this server right now, plus the live settings
+the researcher can change.
 
-  GET /admin        the page (static HTML; holds no data itself)
-  GET /admin/state  everything it shows, as JSON; needs "Authorization: Bearer <ADMIN_TOKEN>"
+  GET  /admin           the page (static HTML; holds no data itself)
+  GET  /admin/state     everything it shows, as JSON
+  POST /admin/settings  change live settings: JSON with any of groupSize,
+                        minGroupSize (null = group size), minStartSize (null =
+                        never start short), lobbyTimeoutMs (0 = no limit),
+                        maxRooms (null = unlimited). 200 with the new
+                        settings, or 400 with { error }.
+  Both data routes need "Authorization: Bearer <ADMIN_TOKEN>".
 
 Off unless ADMIN_TOKEN is set (then /admin* is 404). Serve it over HTTPS only
 (same reverse proxy as the game), since the token travels with every request.
@@ -13,8 +20,8 @@ since the server started, with where they are (before lobby / lobby / playing /
 after a round / ended) and their last screen; recent log events (no ticks).
 Completion URLs are never included.
 
-Read-only by design for now; actions (close recruiting, abort a room, ...)
-would be POST routes here, each logged.
+Setting changes last until the server restarts (the study file is not
+edited); they are applied and logged by the orchestrator (applySettings).
 
 Created by: Elizabeth Mieczkowski, Updated: 10/2026
 */}
@@ -29,6 +36,9 @@ import { sidecarHealth } from "./game/sidecarClient";
 import { backup } from "./backup";
 import { studyInfo } from "./studyConfig";
 
+type LiveSettings = { groupSize: number; minGroupSize: number | null; minStartSize: number | null; lobbyTimeoutMs: number; maxRooms: number | null };
+const MAX_BODY_BYTES = 4096;
+
 /** What the orchestrator knows about each participant (from HELLO and CLIENT_LOG). */
 export type ParticipantInfo = {
   firstSeen: number;
@@ -40,7 +50,7 @@ export type ParticipantInfo = {
 
 const MAX_EVENTS = 300;
 /** Fields copied from log events into the recent-events list (the rest stays in the data logs) */
-const EVENT_FIELDS = ["participantId", "agentId", "reason", "trial", "episodeId", "outcome", "signal", "name"];
+const EVENT_FIELDS = ["participantId", "agentId", "reason", "trial", "episodeId", "outcome", "signal", "name", "changes", "from", "to"];
 const SIDECAR_CHECK_MS = 5000;
 
 type AdminEvent = { t: number; log: string; event: string; details: Record<string, unknown> };
@@ -51,6 +61,10 @@ export function createAdmin(deps: {
   isConnected: (pid: PlayerID) => boolean;
   /** Game settings not kept in studyInfo (horizon, tick length) */
   settings: Record<string, unknown>;
+  /** Live settings now, and as in the study file */
+  liveSettings: () => { current: LiveSettings; file: LiveSettings };
+  /** Validate and apply a settings change */
+  applySettings: (patch: unknown) => Promise<{ ok: true; settings: LiveSettings; resized: Record<string, number> } | { ok: false; error: string }>;
 }) {
   const token = process.env.ADMIN_TOKEN?.trim() || null;
   const startedAt = Date.now();
@@ -81,11 +95,12 @@ export function createAdmin(deps: {
 
   function state() {
     const now = Date.now();
-    const { rooms, ended, finished } = deps.rooms.snapshot();
+    const { rooms, ended, finished, practice, roomsOpened } = deps.rooms.snapshot();
+    const practiceBy = new Map(practice.map((p) => [p.participantId, p]));
     const endedBy = new Map(ended.map((e) => [e.participantId, e]));
     const finishedBy = new Map(finished.map((f) => [f.participantId, f]));
-    const seatBy = new Map<string, { room: string; agentId: string; roomStatus: string }>();
-    for (const r of rooms) for (const s of r.seats) seatBy.set(s.participantId, { room: r.id, agentId: s.agentId, roomStatus: r.status });
+    const seatBy = new Map<string, { room: string; agentId: string; roomStatus: string; kind: string }>();
+    for (const r of rooms) for (const s of r.seats) seatBy.set(s.participantId, { room: r.id, agentId: s.agentId, roomStatus: r.status, kind: r.kind });
 
     const ids = new Set<string>([...deps.participants.keys(), ...seatBy.keys(), ...endedBy.keys(), ...finishedBy.keys()]);
     const participants = [...ids].map((pid) => {
@@ -93,9 +108,12 @@ export function createAdmin(deps: {
       const seat = seatBy.get(pid);
       const end = endedBy.get(pid);
       const fin = finishedBy.get(pid);
+      const prac = practiceBy.get(pid);
       const stage = end ? `ended: ${end.outcome}`
         : fin ? (fin.completedAt ? "completed" : "finished game")
+        : seat?.kind === "practice" ? "practice"
         : seat ? ({ lobby: "lobby", starting: "lobby", playing: "playing", "between rounds": "after a round" } as Record<string, string>)[seat.roomStatus] ?? seat.roomStatus
+        : prac?.passed ? "practice passed"
         : "before lobby";
       return {
         participantId: pid,
@@ -107,6 +125,7 @@ export function createAdmin(deps: {
         firstSeen: info?.firstSeen ?? null,
         lastSeen: info?.lastSeen ?? null,
         ended: end ? { outcome: end.outcome, paid: end.paid, reason: end.reason } : null,
+        practice: prac ? { attempts: prac.attempts, lastSoups: prac.lastSoups, passed: prac.passed, timeLeftMs: prac.timeLeftMs } : null,
         meta: info?.meta ?? {},
       };
     }).sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0));
@@ -123,10 +142,12 @@ export function createAdmin(deps: {
         node: process.version,
       },
       study: { ...studyInfo(), ...deps.settings },
+      settings: { ...deps.liveSettings(), roomsOpened },
       sidecar,
       backup: backup.status(),
-      counts: { participants: participants.length, connected: participants.filter((p) => p.connected).length, rooms: rooms.length, byStage },
-      rooms,
+      counts: { participants: participants.length, connected: participants.filter((p) => p.connected).length, rooms: rooms.filter((r) => r.kind === "group").length, byStage },
+      rooms: rooms.filter((r) => r.kind === "group"),
+      practiceRooms: rooms.filter((r) => r.kind === "practice"),
       participants,
       events: events.slice(-100).reverse(),
     };
@@ -146,12 +167,36 @@ export function createAdmin(deps: {
     res.end(body);
   }
 
+  function readJson(req: IncomingMessage): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk: string) => {
+        body += chunk;
+        if (body.length > MAX_BODY_BYTES) { reject(new Error("Request too large")); req.destroy(); }
+      });
+      req.on("end", () => { try { resolve(JSON.parse(body)); } catch { reject(new Error("Body must be JSON")); } });
+      req.on("error", reject);
+    });
+  }
+
   /** HTTP handler for everything that isn't a WebSocket upgrade. */
   async function handle(req: IncomingMessage, res: ServerResponse) {
     const url = new URL(req.url ?? "/", "http://localhost");
     const isAdmin = url.pathname === "/admin" || url.pathname.startsWith("/admin/");
     if (!isAdmin || !token) return send(res, 404, "text/plain", isAdmin ? "Admin view is off (ADMIN_TOKEN not set)." : "Not found");
-    if (req.method !== "GET") return send(res, 405, "text/plain", "Read-only");
+    if (url.pathname === "/admin/settings") {
+      if (req.method !== "POST") return send(res, 405, "text/plain", "Use POST");
+      if (!authorized(req)) return send(res, 401, "text/plain", "Wrong or missing admin token");
+      if (!(req.headers["content-type"] ?? "").startsWith("application/json")) return send(res, 415, "text/plain", "Send JSON");
+      let patch: unknown;
+      try { patch = await readJson(req); } catch (e) { return send(res, 400, "application/json", JSON.stringify({ error: String((e as Error).message) })); }
+      const result = await deps.applySettings(patch);
+      return result.ok
+        ? send(res, 200, "application/json", JSON.stringify({ settings: result.settings, resizedRooms: result.resized }))
+        : send(res, 400, "application/json", JSON.stringify({ error: result.error }));
+    }
+    if (req.method !== "GET") return send(res, 405, "text/plain", "Method not allowed");
     if (url.pathname === "/admin" || url.pathname === "/admin/") return send(res, 200, "text/html; charset=utf-8", page);
     if (url.pathname === "/admin/state") {
       if (!authorized(req)) return send(res, 401, "text/plain", "Wrong or missing admin token");

@@ -3,7 +3,7 @@ export type AgentID = `agent_${number}`;
 export type PlayerID = string;
 export type RoomID = string;
 
-/** Which game a study runs (server GAME setting); tags specs and running states. */
+/** Which game a study runs */
 export type GameName = "mpe" | "overcooked";
 
 export type MpeAction = number;
@@ -24,7 +24,6 @@ export type PublicAgentState = {
 export interface LobbyState {
   phase: "lobby";
   roomId: RoomID | null;
-  // connected=false while a disconnected player's seat is being held for them
   players: Record<PlayerID, { id: PlayerID; name?: string; connected?: boolean }>;
   playerCount: number;
   maxParticipants?: number;
@@ -48,20 +47,19 @@ export type OvercookedAgentState = {
   isHuman: boolean;
 };
 
-/** Something on a non-floor cell: a loose item on a counter, or a pot's contents. timer = cooking time left. */
 export type OvercookedCellItem = { pos: [number, number]; item: number; timer: number };
 
 export interface OvercookedRunningState {
   phase: "running";
   game: "overcooked";
   agents: Record<AgentID, OvercookedAgentState>;
-  /** Only cells holding something (everything else is as in spec.layout) */
+  /** Only cells holding something */
   items: OvercookedCellItem[];
-  /** Current recipe, as an item code (classic: 12 = 3 onions) */
+  /** Current recipe (classic: 12 = 3 onions) */
   recipe: number;
   /** A correct dish was delivered on this step */
   newCorrectDelivery: boolean;
-  /** Team score this trial (sum of delivery rewards so far); set by the server */
+  /** Team score this trial (sum of delivery rewards) set by the server */
   score: number;
   step: number;
   episodeId: string;
@@ -69,11 +67,10 @@ export interface OvercookedRunningState {
 
 export type RunningState = MpeRunningState | OvercookedRunningState;
 
-// FINISHED (extend as needed)
+// FINISHED
 export interface FinishedState {
   phase: "finished";
   episodeId: string;
-  // optional summary fields...
 }
 
 export type PublicState = LobbyState | RunningState | FinishedState;
@@ -84,9 +81,8 @@ type BaseTrialSpec = {
   action_space: ActionSpace;        // e.g. {type:"discrete", n:5, labels:["noop","left","right","down","up"], noop:0}
   seed: number;
   max_steps?: number;
-  /** Identifies the game config (not the seed) */
+  /** Identifies game config (not the seed) */
   spec_hash: string;
-  /** Library versions in the sidecar (jax, jaxmarl, jaxmarl git commit) */
   versions?: Record<string, string | null>;
 };
 
@@ -116,12 +112,6 @@ export type OvercookedTrialSpec = BaseTrialSpec & {
 
 export type TrialSpec = MpeTrialSpec | OvercookedTrialSpec;
 
-/**
- * Overcooked item codes (JaxMARL OvercookedV2 bitfield): bit 0 plate, bit 1
- * cooked, then 2 bits per ingredient holding its count (ingredient 0 = onion).
- * 0 nothing, 1 plate, 4 onion, 12 three onions (in a pot), 14 cooked soup in a
- * pot, 15 plated soup.
- */
 export function decodeItem(code: number): { plate: boolean; cooked: boolean; ingredients: number[] } {
   const ingredients: number[] = [];
   for (let rest = code >> 2; rest > 0; rest >>= 2) ingredients.push(rest & 0x3);
@@ -146,13 +136,9 @@ export type CoreClientEvent =
   | { type: "PLAYER_WAITING"; playerId: PlayerID }
   | { type: "TRIAL_READY"; trialId: string; duration: number }
   | { type: "SEND_CHAT"; message: string }
-  // Something the participant did outside the game (consent, screen changes,
-  // survey answers), for the participants data log. id is unique per entry; the
-  // server answers LOG_ACK so the client can resend anything not acknowledged.
   | { type: "CLIENT_LOG"; id: string; event: string; clientTime: number; data?: Record<string, unknown> }
-  // Sent from the final screen: asks for the completion URL. The server answers
-  // COMPLETION, with the URL only if it saw this participant finish every round.
-  | { type: "STUDY_COMPLETE" };
+  | { type: "STUDY_COMPLETE" }
+  | { type: "PRACTICE_JOIN" };
 
 export type ClientEvent = CoreClientEvent | MpeClientEvent;
 
@@ -172,40 +158,22 @@ export type CoreServerEvent =
   | { type: "PLAYER_LEFT"; playerId: PlayerID }
   | { type: "ERROR"; message: string }
   | { type: "LOG_ACK"; id: string }
-  // Reply to STUDY_COMPLETE. completionUrl null = this participant did not finish
-  // the game (reason says why); the client asks them to contact the researcher.
+  | { type: "PRACTICE_STATUS"; attempts: number; passed: boolean; lastSoups: number | null; required: number; deadline: number | null; skipped?: boolean }
+  | { type: "LOBBY_DEADLINE"; deadline: number | null; paid: boolean }
   | { type: "COMPLETION"; completionUrl: string | null; reason?: string }
-  // Reply to HELLO.
-  //  new:     server has no seat for this participant
-  //  resumed: seat restored; running/trialsCompleted let the client jump to the right screen
-  //           (if running, a TRIAL_START for the current trial follows)
-  //  finished: participant played every round (ROUNDS); they're past the game
-  //           (survey, debrief, completion) and can no longer be dropped or aborted
-  //  ended:   participant can't continue; client should stop (see EndInfo)
-  | { type: "SESSION_STATUS"; status: "new" }
+  | { type: "SESSION_STATUS"; status: "new"; practicePassed?: boolean }
   | { type: "SESSION_STATUS"; status: "finished"; roundsCompleted: number }
-  | { type: "SESSION_STATUS"; status: "resumed"; roomId: RoomID; agentId: AgentID; running: boolean; trialsCompleted: number }
+  | { type: "SESSION_STATUS"; status: "resumed"; roomId: RoomID; agentId: AgentID; running: boolean; trialsCompleted: number; kind?: "practice" | "group" }
   | ({ type: "SESSION_STATUS"; status: "ended" } & EndInfo)
-  // Sent when a player gets (or gets back) a seat: what to do if the server
-  // disappears without telling anyone (crash). Only seated players receive it,
-  // so the completion URL never ships in the client bundle.
   | { type: "ABORT_POLICY"; paid: boolean; completionUrl: string | null };
 
-/**
- * Why a participant's study ended early:
- *   aborted  - our side: server stopped/crashed, environment failure, or the
- *              group fell below its minimum size
- *   dropped  - they were disconnected longer than the grace period (left)
- *   replaced - they opened the study in another tab
- */
-export type EndOutcome = "aborted" | "dropped" | "replaced";
+export type EndOutcome = "aborted" | "no_group" | "practice_timeout" | "dropped" | "replaced";
 
-/** How an early end is handled; paid/completionUrl come from the study config. */
+/** How an early end is handled. */
 export type EndInfo = {
   outcome: EndOutcome;
   reason: string;
   paid: boolean;
-  /** Where to send the participant (e.g. a Prolific completion URL), if anywhere */
   completionUrl: string | null;
 };
 

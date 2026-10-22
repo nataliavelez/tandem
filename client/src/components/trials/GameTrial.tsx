@@ -26,9 +26,11 @@ type Props = {
   round: number;
   durationMs: number;
   onNext: () => void;
+  /** Heading (default "Round <round>") */
+  label?: string;
 };
 
-export function GameTrial({ round, durationMs, onNext }: Props) {
+export function GameTrial({ round, durationMs, onNext, label }: Props) {
   const { socket, addMessageListener, removeMessageListener, agentId, activeTrial } = useSocket();
 
   const [state, setState] = useState<PublicState | null>(null);
@@ -81,7 +83,7 @@ export function GameTrial({ round, durationMs, onNext }: Props) {
   return (
     <div style={{ padding: 20, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif" }}>
       <div style={{ display: "flex", justifyContent: "center", alignItems: "baseline", gap: 24, marginBottom: 12 }}>
-        <h2 style={{ margin: 0 }}>Round {round}</h2>
+        <h2 style={{ margin: 0 }}>{label ?? `Round ${round}`}</h2>
         {minutes !== null && (
           <div style={{ fontSize: "1.25rem", fontWeight: 700, color: timeLeft! <= 10 ? "#ef4444" : undefined }}>
             Time left: {minutes}
