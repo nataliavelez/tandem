@@ -64,7 +64,7 @@ sudo DOMAIN=study.yourlab.org GIT_REF=main bash setup.sh
 
 - `GIT_REF` is the branch, tag or commit to deploy.
 - If the GitHub repo is **private**, add
-  `REPO_URL=git@github.com:nataliavelez/colab-tandem.git`. The first run creates
+  `REPO_URL=git@github.com:nataliavelez/tandem.git`. The first run creates
   a key and stops. Add that key on GitHub (repo → Settings → Deploy keys →
   Add deploy key, **read-only**), then run the same command again.
 - Optional: `ACME_EMAIL=you@yourlab.org` for certificate notices.

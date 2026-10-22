@@ -8,8 +8,8 @@
 # Settings (environment variables):
 #   DOMAIN      (required) the domain whose DNS A record points at this server
 #   GIT_REF     branch, tag or commit to deploy (default: main)
-#   REPO_URL    default https://github.com/nataliavelez/colab-tandem.git; for a
-#               private repo use git@github.com:nataliavelez/colab-tandem.git
+#   REPO_URL    default https://github.com/nataliavelez/tandem.git; for a
+#               private repo use git@github.com:nataliavelez/tandem.git
 #               (the script then makes a read-only deploy key and stops so you
 #               can add it on GitHub; re-run afterwards)
 #   ACME_EMAIL  optional: email for Let's Encrypt certificate notices
@@ -23,7 +23,7 @@ set -euo pipefail
 
 DOMAIN="${DOMAIN:?Set DOMAIN, e.g. sudo DOMAIN=study.example.org bash setup.sh}"
 GIT_REF="${GIT_REF:-main}"
-REPO_URL="${REPO_URL:-https://github.com/nataliavelez/colab-tandem.git}"
+REPO_URL="${REPO_URL:-https://github.com/nataliavelez/tandem.git}"
 ACME_EMAIL="${ACME_EMAIL:-}"
 
 # Until the repo is cloned, lib.sh isn't on disk: minimal helpers first

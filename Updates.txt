@@ -1066,3 +1066,8 @@ KNOWN ISSUES (open, additions)
 - Practice progress is in memory: after a server restart, participants who
   passed practice but hadn't joined a group are sent back to practice.
 - PRACTICE_HORIZON uses the same TICK_MS as the game.
+
+[bug] Deployment: setup.sh's default REPO_URL (and the README's private-repo
+      example) pointed at the old repo address; the repo moved to
+      github.com/nataliavelez/tandem. Updated (the git remote too).
+      Files: deploy/setup.sh, deploy/README.md
