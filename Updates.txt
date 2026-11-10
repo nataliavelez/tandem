@@ -1154,3 +1154,38 @@ KNOWN ISSUES (open, additions)
   and video game proficiency were drafted here; the lab should review them.
 - Video game proficiency is a list of options with hover definitions (the
   spec also showed a row of stars for it).
+
+================================================================================
+2026-11-10 (cont.) — First droplet run: setup.sh fix
+================================================================================
+
+[bug] deploy/setup.sh loaded deploy/lib.sh before switching to GIT_REF, so on
+      a fresh droplet it read the repo's default branch (main), which has no
+      deploy/ folder, and stopped with "lib.sh: No such file or directory".
+      It now switches to GIT_REF right after cloning, and stops with a clear
+      message if that ref has no deploy/ folder. Re-running on a droplet
+      where the clone already exists works.
+      Files: deploy/setup.sh
+
+[test] The new checkout step was run against a local copy of the repo whose
+      default branch is main: GIT_REF=mpe finds deploy/lib.sh; GIT_REF=main
+      stops with the new message. bash -n clean.
+
+[bug] deploy/lib.sh: commands run as the tandem user (as_app) kept the
+      caller's folder, usually /root, which that user can't read. uv looks
+      for uv.toml in the current folder, so the sidecar's Python setup failed
+      with "failed to open file /root/uv.toml: Permission denied". as_app now
+      runs from /opt/tandem and turns off uv config files (UV_NO_CONFIG=1),
+      so the install doesn't depend on where the script is started.
+      Files: deploy/lib.sh
+
+[bug] The client build (tsc -b) needs Node's types for vite.config.ts (path,
+      __dirname), but the client didn't list @types/node: locally it was
+      borrowed from the repo-root node_modules (installed for vitest/ts-node).
+      On the droplet only client/ is installed, so the build failed with
+      "Cannot find module 'path'". Added @types/node ^24 to the client's
+      devDependencies (lockfile updated: @types/node 24.19.2, undici-types).
+      Files: client/package.json, client/package-lock.json
+
+[test] Clean copy of the working tree with no repo-root node_modules:
+      npm ci + npm run build in client/ succeeds (as deploy/lib.sh does).

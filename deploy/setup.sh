@@ -76,6 +76,16 @@ if [ ! -d "$APP/.git" ]; then
   sudo -u "$APP_USER" -H git clone "$REPO_URL" "$APP"
 fi
 
+# Switch to GIT_REF before loading the helpers: the clone starts on the
+# repo's default branch, which may not have deploy/ at all
+sudo -u "$APP_USER" -H git -C "$APP" fetch --prune --tags origin
+if sudo -u "$APP_USER" -H git -C "$APP" show-ref --verify --quiet "refs/remotes/origin/$GIT_REF"; then
+  sudo -u "$APP_USER" -H git -C "$APP" checkout -B "$GIT_REF" "origin/$GIT_REF"
+else
+  sudo -u "$APP_USER" -H git -C "$APP" checkout --detach "$GIT_REF"
+fi
+[ -f "$APP/deploy/lib.sh" ] || { echo "GIT_REF=$GIT_REF has no deploy/ folder. Use the branch with the deploy kit, e.g. GIT_REF=mpe" >&2; exit 1; }
+
 # From here on, the shared helpers and pinned versions come from the repo
 # shellcheck source=deploy/lib.sh
 . "$APP/deploy/lib.sh"

@@ -16,7 +16,9 @@ export UV_PYTHON_INSTALL_DIR=$BASE/python
 
 log() { printf '\n==> %s\n' "$*"; }
 warn() { printf '\n!!  %s\n' "$*" >&2; }
-as_app() { sudo -u "$APP_USER" -H env UV_PYTHON_INSTALL_DIR="$UV_PYTHON_INSTALL_DIR" "$@"; }
+# Run as the app user, from $BASE: sudo keeps the caller's folder (often /root,
+# which the app user can't read), and uv reads config files from the current folder
+as_app() { (cd "$BASE" && sudo -u "$APP_USER" -H env UV_PYTHON_INSTALL_DIR="$UV_PYTHON_INSTALL_DIR" UV_NO_CONFIG=1 "$@"); }
 
 require_root() {
   [ "$(id -u)" -eq 0 ] || { echo "Run this as root: sudo bash $0" >&2; exit 1; }
