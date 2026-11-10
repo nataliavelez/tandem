@@ -1,0 +1,89 @@
+/* Survey screen (Survey.tsx). Works on the app's dark and light themes. */
+
+.survey {
+  padding: 2rem;
+  max-width: 720px;
+  text-align: left;
+}
+.survey-progress { font-size: 14px; opacity: 0.7; margin-bottom: -8px; }
+.survey-intro { line-height: 1.5; }
+
+.survey-question { margin: 0 0 26px; padding: 0; border: none; min-width: 0; }
+.survey-question legend { font-weight: 600; margin-bottom: 10px; padding: 0; line-height: 1.4; }
+.survey-optional { font-weight: 400; opacity: 0.7; }
+.survey-note { margin: 0 0 10px; line-height: 1.5; opacity: 0.85; }
+.survey-error { color: #ef4444; font-size: 14px; margin-top: 6px; }
+
+/* Inputs */
+.survey-text, .survey-select, .survey-number, .survey-describe {
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid rgba(128, 128, 128, 0.6);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  box-sizing: border-box;
+}
+.survey-text { width: 100%; }
+.survey-select { width: 100%; max-width: 360px; }
+.survey-select option { color: initial; background: initial; }
+.survey-number { width: 6em; }
+.survey-number[aria-invalid="true"] { border-color: #ef4444; }
+
+/* 1–5 radio row */
+.survey-scale { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.survey-scale label { display: flex; flex-direction: column; align-items: center; font-size: 14px; cursor: pointer; }
+.survey-scale-end { font-size: 14px; opacity: 0.8; }
+
+/* Choice / multi options */
+.survey-options { display: flex; flex-direction: column; gap: 6px; }
+.survey-option { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.survey-hint-anchor { position: relative; }
+.survey-option label { cursor: pointer; }
+.survey-describe { flex: 1 1 200px; max-width: 320px; padding: 3px 8px; }
+
+/* Hover hints: a dotted label; the hint appears just right of it (not over
+   the next options) on hover or keyboard focus */
+.survey-hinted { text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
+.survey-hint {
+  display: none;
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+  width: max-content;
+  max-width: min(380px, 45vw);
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: #111;
+  color: #f5f5f5;
+  font-size: 14px;
+  line-height: 1.4;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+/* Narrow windows: no room to the right of long labels, so show it below */
+@media (max-width: 900px) {
+  .survey-hint { left: 1.6em; top: calc(100% + 4px); transform: none; max-width: min(380px, 100vw - 7rem); }
+}
+.survey-option label:hover + .survey-hint,
+.survey-option label:focus-within + .survey-hint { display: block; }
+
+/* Icon ratings (stars, flames): unlit icons are grey and faint */
+.survey-rating { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; }
+.survey-rating-icon {
+  font-size: 28px;
+  line-height: 1;
+  padding: 2px 4px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  filter: grayscale(1);
+  opacity: 0.35;
+  transition: opacity 0.1s, filter 0.1s, transform 0.1s;
+}
+.survey-rating-icon.lit { filter: none; opacity: 1; }
+.survey-rating-icon:hover { transform: scale(1.12); background: transparent; border: none; }
+.survey-rating-icon:focus-visible { outline: 2px solid #646cff; outline-offset: 2px; }
+.survey-rating-label { margin-left: 12px; font-size: 15px; min-width: 12em; }

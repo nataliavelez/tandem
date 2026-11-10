@@ -472,13 +472,12 @@ export class GameRoom {
 
     let finishedEpisode: string | null = null;
     let endReason: "horizon" | "done" = "horizon";
+    const actions: Record<string, number> = {};
+    for (let i = 0; i < this.capacity; i++) {
+      const a = `agent_${i}` as AgentID;
+      actions[a] = this.nextAction(a);
+    }
     try {
-      const actions: Record<string, number> = {};
-      for (let i = 0; i < this.capacity; i++) {
-        const a = `agent_${i}` as AgentID;
-        actions[a] = this.nextAction(a);
-      }
-
       const stepStart = Date.now();
       const stepResp = await envStep(this.envId, actions);
       const stepLatencyMs = Date.now() - stepStart;
@@ -525,6 +524,12 @@ export class GameRoom {
     } catch (e: any) {
       this.consecutiveErrors++;
       console.error(`[room ${this.id}] step failed (${this.consecutiveErrors}):`, e?.message ?? e);
+      // A timed-out step may still have been applied by the sidecar (the next
+      // tick's step then jumps by 2), so record the actions that were sent
+      this.log.write("step_error", {
+        trial: this.trialCount, lastStep: this.lastStep, actions,
+        error: String(e?.message ?? e), consecutive: this.consecutiveErrors,
+      });
       if (this.consecutiveErrors >= MAX_CONSECUTIVE_STEP_ERRORS) {
         // The env's state is gone or unreliable; the group can't continue
         this.abort("The game lost contact with its environment because of a technical problem.");

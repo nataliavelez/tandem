@@ -10,7 +10,8 @@ Files go to DATA_DIR (default: server/data/), named <server start time>_<name>.j
 Room log events (<run>_<roomId>.jsonl):
   room_created (study info, code versions), player_joined, player_disconnected,
   player_reconnected, player_replaced, player_left, player_dropped,
-  trial_start (incl. initialState = step 0), tick, trial_end, room_aborted,
+  trial_start (incl. initialState = step 0), tick, step_error (a failed or
+  timed-out sidecar step, with its actions), trial_end, room_aborted,
   room_disposed
 Participants log events (<run>_participants.jsonl):
   server_started (study info), participant_hello, client_event (CLIENT_LOG from

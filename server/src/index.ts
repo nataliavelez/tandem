@@ -15,7 +15,7 @@ import { DataLog } from "./game/dataLog";
 import { backup } from "./backup";
 import {
   studyConfig, studyInfo, endInfo, unseatedEndInfo, checkStudyConfig,
-  live, fileSettings, minGroupSizeFor, validateSettings, setLiveSettings,
+  live, fileSettings, minGroupSizeFor, validateSettings, setLiveSettings, type LiveSettings,
 } from "./studyConfig";
 import { createAdmin, type ParticipantInfo } from "./admin";
 
@@ -52,6 +52,29 @@ const practiceOptions = (): GameRoomOptions => ({
 });
 const rooms = new RoomManager({ group: roomOptions, practice: practiceOptions });
 
+/** Group sizes the sidecar has already compiled (see warmGroupSizes). */
+const warmedSizes = new Set<number>();
+/**
+ * Have the sidecar compile every group size a room can end up with, so no
+ * resize compiles mid-study (that stalls every running room for 0.5-2 s):
+ * groupSize, and at a lobby timeout anything down to minStartSize. upTo
+ * covers an admin downsize, where lobby rooms with more players than the new
+ * size keep their seat count. Returns the size that failed, if any.
+ */
+async function warmGroupSizes(s: Pick<LiveSettings, "groupSize" | "minStartSize">, upTo = s.groupSize): Promise<{ size: number; error: unknown } | null> {
+  const low = Math.min(s.minStartSize ?? s.groupSize, s.groupSize);
+  for (let size = low; size <= Math.max(upTo, s.groupSize); size++) {
+    if (warmedSizes.has(size)) continue;
+    try {
+      await warmSidecar({ ...roomOptions(rooms.roomsOpened + 1), num_agents: size });
+    } catch (error) {
+      return { size, error };
+    }
+    warmedSizes.add(size);
+  }
+  return null;
+}
+
 /** Participant-level events (not tied to a room). */
 const participantsLog = new DataLog("participants");
 participantsLog.write("server_started", { study: studyInfo() });
@@ -72,14 +95,14 @@ function applySettings(patch: unknown): Promise<{ ok: true; settings: typeof liv
     const checked = validateSettings(patch);
     if (!checked.ok) return checked;
     const { next } = checked;
-    if (next.groupSize !== live.groupSize) {
-      try {
-        await warmSidecar({ ...roomOptions(rooms.roomsOpened + 1), num_agents: next.groupSize });
-      } catch (e) {
+    if (next.groupSize !== live.groupSize || next.minStartSize !== live.minStartSize) {
+      const failed = await warmGroupSizes(next, live.groupSize);
+      if (failed) {
+        const e = failed.error;
         if (e instanceof SidecarError && e.status >= 400 && e.status < 500) {
-          return { ok: false as const, error: `The game can't be set up for ${next.groupSize} players: ${e.message}` };
+          return { ok: false as const, error: `The game can't be set up for ${failed.size} players: ${e.message}` };
         }
-        return { ok: false as const, error: `The game environment (sidecar) is unavailable, so the group size can't be changed: ${String((e as Error)?.message ?? e)}` };
+        return { ok: false as const, error: `The game environment (sidecar) is unavailable, so the group sizes can't be changed: ${String((e as Error)?.message ?? e)}` };
       }
     }
     const changes = setLiveSettings(next);
@@ -381,9 +404,11 @@ void (async () => {
   for (let attempt = 1; attempt <= 20; attempt++) {
     try {
       const t = Date.now();
-      await warmSidecar(roomOptions(1));
+      // Every size a room can be resized to (lobby timeout), not just groupSize
+      const failed = await warmGroupSizes(live);
+      if (failed) throw failed.error;
       if (studyConfig.practice.enabled) await warmSidecar(practiceOptions());
-      console.log(`[orchestrator] sidecar warmed up in ${Date.now() - t}ms`);
+      console.log(`[orchestrator] sidecar warmed up (group sizes ${[...warmedSizes].sort((a, b) => a - b).join(", ")}) in ${Date.now() - t}ms`);
       return;
     } catch (e) {
       if (e instanceof SidecarError && e.status >= 400 && e.status < 500) {

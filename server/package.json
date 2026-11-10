@@ -14,8 +14,9 @@
     "test:admin": "node test/admin.js",
     "test:completion": "node test/completion.js",
     "test:lobby": "node test/lobby.js",
-    "test:practice": "node test/practice.js",
-    "test:all": "node test/bots.js && node test/reconnect.js && node test/groupsize.js && node test/datalog.js && node test/overcooked.js && node test/admin.js && node test/completion.js && node test/lobby.js && node test/practice.js"
+    "test:practice": "node test/practice.js && node test/sidecar.js",
+    "test:sidecar": "node test/sidecar.js",
+    "test:all": "node test/bots.js && node test/reconnect.js && node test/groupsize.js && node test/datalog.js && node test/overcooked.js && node test/admin.js && node test/completion.js && node test/lobby.js && node test/practice.js && node test/sidecar.js"
   },
   "keywords": [],
   "author": "",

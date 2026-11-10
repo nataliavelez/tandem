@@ -67,19 +67,37 @@ export interface GameTrialConfig extends BaseTrialConfig {
   condition?: string;
 }
 
+/**
+ * An option of a choice/multi question: a plain label, or a label with
+ * hint (shown on hover/focus, e.g. examples) and/or describe (adds a text box;
+ * its text is logged as <question id>_self_describe while the option is picked).
+ * exclusive (multi only): picking it clears the others, e.g. "Prefer not to say".
+ */
+export type SurveyOption = string | { label: string; hint?: string; describe?: boolean; exclusive?: boolean };
+
 /** One survey question. Answers are logged by id (survey_response). */
 export type SurveyQuestion =
   /** Rating from min to max (e.g. 1–5), with labels for the ends */
   | { id: string; type: "scale"; text: string; min: number; max: number; minLabel?: string; maxLabel?: string; required?: boolean }
-  /** Pick one option */
-  | { id: string; type: "choice"; text: string; options: string[]; required?: boolean }
+  /** Pick one option (logged as the option's label) */
+  | { id: string; type: "choice"; text: string; options: SurveyOption[]; required?: boolean }
+  /** Pick any number of options (logged as an array of labels) */
+  | { id: string; type: "multi"; text: string; options: SurveyOption[]; required?: boolean }
+  /** Drop-down. "countries" = every country/region, logged as its ISO 3166 code (e.g. "US") */
+  | { id: string; type: "dropdown"; text: string; options: "countries" | string[]; placeholder?: string; required?: boolean }
+  /** Whole number between min and max (logged as a number); anything else blocks Continue */
+  | { id: string; type: "number"; text: string; min?: number; max?: number; invalidMessage?: string; required?: boolean }
+  /** 1..labels.length icons (e.g. stars); the hovered or picked rating's label is shown beside them. Logged as a number */
+  | { id: string; type: "rating"; text: string; icon?: string; labels: string[]; required?: boolean }
   /** Free text; multiline for a text box. maxLength defaults to 2000 characters */
-  | { id: string; type: "text"; text: string; multiline?: boolean; maxLength?: number; required?: boolean };
+  | { id: string; type: "text"; text: string; note?: string; multiline?: boolean; maxLength?: number; required?: boolean };
 
 export interface SurveyTrialConfig extends BaseTrialConfig {
   type: "survey";
   title?: string;
   intro?: string;
+  /** Small line above the title, e.g. "Page 1 of 2" */
+  progress?: string;
   questions: SurveyQuestion[];
 }
 

@@ -1071,3 +1071,86 @@ KNOWN ISSUES (open, additions)
       example) pointed at the old repo address; the repo moved to
       github.com/nataliavelez/tandem. Updated (the git remote too).
       Files: deploy/setup.sh, deploy/README.md
+
+------------------------------------------------------------
+Session 2026-11-10 — Server ↔ sidecar robustness
+------------------------------------------------------------
+
+[bug] Sidecar calls had no timeout (only /health did). A sidecar that hung
+      instead of erroring froze the room's tick loop for good: the step never
+      failed, so MAX_CONSECUTIVE_STEP_ERRORS never aborted the room and
+      players sat on a frozen game. Every call now times out: step 2 s
+      (SIDECAR_STEP_TIMEOUT_MS), create 60 s (may compile), others 10 s. A
+      stuck sidecar now aborts the room after ~40 s (20 failed steps).
+      Files: server/src/game/sidecarClient.ts
+
+[feature] Data log: new step_error event (trial, lastStep, the actions sent,
+      error) for each failed step. A timed-out step may still have been
+      applied by the sidecar, so its actions would otherwise be missing from
+      the log (the next tick's step then jumps by 2).
+      Files: server/src/game/gameRoom.ts, server/src/game/dataLog.ts
+
+[bug] A lobby-timeout short start (MIN_START_SIZE) resized the room to a group
+      size that was never compiled, so the sidecar compiled mid-study (0.5-2 s
+      during which every running room stalls). Startup now compiles every size
+      from MIN_START_SIZE to REQUIRED_PLAYERS, and admin changes to group size
+      or minStartSize compile any new sizes before they apply (up to the old
+      group size, for lobby rooms that keep more players after a downsize).
+      Files: server/src/index.ts
+
+[test] New server/test/sidecar.js (npm run test:sidecar; own server on :8094
+      behind a proxy to the sidecar on :8199; in test:all), 15 checks: sizes
+      2-4 compiled at startup; minStartSize → 1 compiles size 1 then; the
+      lobby-timeout resize to 2 compiles nothing new; a sidecar that stops
+      answering steps → 20 step_error lines with actions, room_aborted,
+      players ended as aborted (~6 s with a 300 ms timeout). Fails 9 checks on
+      the previous code (no extra sizes warmed, room never aborts). test:all
+      (10 suites) passed.
+
+------------------------------------------------------------
+Session 2026-11-10 (cont.) — Lab end survey
+------------------------------------------------------------
+
+[feature] End survey replaced with the lab's two-page survey (all questions
+      optional): page 1 background (country/region, age, gender, race/
+      ethnicity, education, native languages, English proficiency), page 2
+      the task (video game proficiency; fun, difficulty and clarity ratings;
+      bugs/connectivity; comments). Each page is its own survey screen and is
+      logged as its own survey_response (end-survey-background,
+      end-survey-task). The old questions (incl. team_coordination,
+      played_before) are gone.
+      Files: client/src/scripts/expTimeline.ts
+
+[feature] Survey question types: multi (checkboxes; an exclusive option such
+      as "Prefer not to say" clears the rest), dropdown (options: "countries"
+      = 250 countries/regions, logged as ISO codes, e.g. "GB"), number (whole
+      number in [min, max]; anything else blocks Continue), rating (row of
+      icons, e.g. stars or flames, whose label shows on hover/pick; logged
+      1..n). Options of choice/multi can have hover hints (also shown on
+      keyboard focus) and self-describe boxes (typing picks the option; the
+      text is logged as <id>_self_describe only while that option is picked).
+      Survey screens get an optional progress line ("Page 1 of 2"), questions
+      an optional note; "(optional)" is shown only on surveys with required
+      questions; each page opens scrolled to the top; Continue with a problem
+      scrolls to it. Styles moved to Survey.css (dark and light themes).
+      Files: client/types.ts, client/src/components/trials/Survey.tsx,
+      client/src/components/trials/Survey.css (new),
+      client/src/scripts/countries.ts (new)
+
+[test] Browser check (headless Chrome, both color schemes), 26 checks: page
+      labels; 250 countries; age 17 and "3a" rejected and block Continue, 34
+      accepted; self-describe typing picks the option; hints show on hover and
+      keyboard focus and aren't part of the option's accessible name;
+      exclusive "Prefer not to say"; refresh keeps the draft; page 2 starts at
+      the top; star hover/pick labels; logged answers (ISO code, numeric age,
+      race in option order + self-description, trimmed text, ratings 1-5,
+      unanswered left out; self-description dropped once another option is
+      picked). No horizontal scroll from 360 to 1280 px. All passed except a
+      404 for /favicon.ico on the temporary preview page (the app's
+      index.html has its own icon). tsc, eslint and vite build clean.
+
+KNOWN ISSUES (open, additions)
+- The hover hints for race/ethnicity (OMB SPD 15 2024 examples), education
+  and video game proficiency were drafted here; the lab should review them.
+- Video game proficiency is a list of options with hover definitions (the
+  spec also showed a row of stars for it).
