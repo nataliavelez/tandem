@@ -61,6 +61,8 @@ export interface OvercookedRunningState {
   newCorrectDelivery: boolean;
   /** Team score this trial (sum of delivery rewards) set by the server */
   score: number;
+  /** Correct soups served this round (the order is complete at the spec's order_size) */
+  delivered?: number;
   step: number;
   episodeId: string;
 }
@@ -108,6 +110,12 @@ export type OvercookedTrialSpec = BaseTrialSpec & {
   pot_cook_time: number;
   delivery_reward: number;
   start_cooking_interaction: boolean;
+  /** Scaling-sweep settings (lab JaxMARL fork) */
+  recipe_size?: number;             // onions per soup
+  order_size?: number | null;       // the round ends once this many soups are served (null = runs to max_steps)
+  num_pots?: number;
+  pot_placement?: "nearest" | "spread" | null;
+  no_collision?: boolean;
 };
 
 export type TrialSpec = MpeTrialSpec | OvercookedTrialSpec;
@@ -161,7 +169,8 @@ export type CoreServerEvent =
   | { type: "PRACTICE_STATUS"; attempts: number; passed: boolean; lastSoups: number | null; required: number; deadline: number | null; skipped?: boolean }
   | { type: "LOBBY_DEADLINE"; deadline: number | null; paid: boolean }
   /** soups: the team's total over all rounds; bonus: BONUS_PER_SOUP x soups, capped (null = no bonus) */
-  | { type: "COMPLETION"; completionUrl: string | null; reason?: string; soups?: number | null; bonus?: number | null }
+  /** orders: rounds whose whole order the team served, out of all rounds (null without ORDER_SIZE) */
+  | { type: "COMPLETION"; completionUrl: string | null; reason?: string; soups?: number | null; bonus?: number | null; orders?: { completed: number; total: number } | null }
   | { type: "SESSION_STATUS"; status: "new"; practicePassed?: boolean }
   | { type: "SESSION_STATUS"; status: "finished"; roundsCompleted: number }
   | { type: "SESSION_STATUS"; status: "resumed"; roomId: RoomID; agentId: AgentID; running: boolean; trialsCompleted: number; kind?: "practice" | "group" }

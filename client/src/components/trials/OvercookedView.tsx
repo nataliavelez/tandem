@@ -44,24 +44,37 @@ export function OvercookedView({ socket, spec, state, agentId }: Props) {
   }, [state?.score]);
 
   const score = state?.score ?? 0;
-  const served = Math.round(score / spec.delivery_reward);
+  const served = state?.delivered ?? Math.round(score / spec.delivery_reward);
+  const order = spec.order_size ?? null;
+  const onions = spec.recipe_size ?? spec.recipes[0]?.length ?? 3;
 
   return (
     <div style={{ display: "flex", gap: 20, alignItems: "flex-start", justifyContent: "center", flexWrap: "wrap" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <OvercookedCanvas spec={spec} state={state} myAgentId={agentId} />
         <div style={panel}>
-          <OvercookedLegend potCookTime={spec.pot_cook_time} />
+          <OvercookedLegend potCookTime={spec.pot_cook_time} recipeSize={onions} />
         </div>
       </div>
 
       <div style={{ width: 280, display: "flex", flexDirection: "column", gap: 12 }}>
-        <div style={panel}>
-          <div style={{ fontSize: 14, opacity: 0.75 }}>{spec.num_agents === 1 ? "Score" : "Team score"}</div>
-          <div style={{ fontSize: "2rem", fontWeight: 700, lineHeight: 1.1 }}>{score}</div>
-          <div style={{ fontSize: 14, opacity: 0.75 }}>{served} soup{served === 1 ? "" : "s"} served</div>
-          <div style={{ minHeight: 22, color: "#16a34a", fontWeight: 600 }}>{flash}</div>
-        </div>
+        {order !== null ? (
+          <div style={panel}>
+            <div style={{ fontSize: 14, opacity: 0.75 }}>{spec.num_agents === 1 ? "Your order" : "Team order"}</div>
+            <div style={{ fontSize: "2rem", fontWeight: 700, lineHeight: 1.1 }}>{served} / {order}</div>
+            <div style={{ fontSize: 14, opacity: 0.75 }}>
+              soups served. The round ends when {spec.num_agents === 1 ? "you serve" : "your team serves"} {order} soup{order === 1 ? "" : "s"}.
+            </div>
+            <div style={{ minHeight: 22, color: "#16a34a", fontWeight: 600 }}>{flash && "Soup served!"}</div>
+          </div>
+        ) : (
+          <div style={panel}>
+            <div style={{ fontSize: 14, opacity: 0.75 }}>{spec.num_agents === 1 ? "Score" : "Team score"}</div>
+            <div style={{ fontSize: "2rem", fontWeight: 700, lineHeight: 1.1 }}>{score}</div>
+            <div style={{ fontSize: 14, opacity: 0.75 }}>{served} soup{served === 1 ? "" : "s"} served</div>
+            <div style={{ minHeight: 22, color: "#16a34a", fontWeight: 600 }}>{flash}</div>
+          </div>
+        )}
 
         {agentId && (
           <div style={{ ...panel, display: "flex", alignItems: "center", gap: 10 }}>
@@ -76,7 +89,9 @@ export function OvercookedView({ socket, spec, state, agentId }: Props) {
 
         <div style={panel}>
           <div style={{ fontWeight: 600, marginBottom: 4 }}>Recipe</div>
-          <div>Onion soup: 3 onions in a pot, then serve it on a plate.</div>
+          <div>
+            Onion soup: {onions === 1 ? "1 onion" : `${onions} onions`} in a pot. It cooks by itself; then put it on a plate and serve it.
+          </div>
         </div>
 
         <div style={panel}>

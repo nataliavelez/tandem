@@ -19,10 +19,19 @@ Payment rules:
 
 Finishing: a participant who played every round gets COMPLETION_URL
 
+Rounds (Overcooked, scaling-sweep design): ROUND_CONDITIONS lists each round's
+kitchen as p<pots>_c<cook steps> (e.g. p1_c5,p5_c60); ROUNDS is then their
+number. CONDITION_ORDER=rotate (default) starts group k at entry k (a Latin
+square over groups), fixed gives every group the listed order. Rules shared by
+every round: ORDER_SIZE (the round ends once the team serves that many soups;
+empty = play to HORIZON), RECIPE_SIZE (onions per soup, default 3),
+POT_PLACEMENT (nearest | spread, as in the sweep) and NO_COLLISION.
+
 Bonus (Overcooked): finishers get BONUS_PER_SOUP x the soups their team served
-over all rounds, capped at BONUS_MAX, rounded to cents. Shown on the final
-screen and logged with study_completed; the platform doesn't pay it (Prolific
-bulk bonus). BONUS_PER_SOUP unset = no bonus.
+over all rounds, plus BONUS_SPEED_PER_ROUND x (1 - steps used / step limit) for
+every round whose order they completed, capped at BONUS_MAX, rounded to cents.
+Shown on the final screen and logged with study_completed; the platform doesn't
+pay it (Prolific bulk bonus). Neither rate set = no bonus.
 
 Created by: Elizabeth Mieczkowski, Updated: 10/2026
 */}
@@ -53,12 +62,37 @@ function envMoney(name: string): number | null {
 }
 
 const bonusPerSoup = envMoney("BONUS_PER_SOUP");
+const bonusSpeedPerRound = envMoney("BONUS_SPEED_PER_ROUND");
 const bonusMax = envMoney("BONUS_MAX");
 
-/** A finisher's bonus for the soups their team served, or null if there is no bonus. */
-export function bonusFor(soups: number | null): number | null {
-  if (bonusPerSoup === null || soups === null) return null;
-  const amount = bonusMax === null ? bonusPerSoup * soups : Math.min(bonusPerSoup * soups, bonusMax);
+/** How one of a group's rounds went (Overcooked); the speed bonus is based on it. */
+export type TrialResult = {
+  trial: number;
+  /** ROUND_CONDITIONS entry, e.g. "p5_c60" (null without conditions) */
+  condition: string | null;
+  /** The team served the whole order (ORDER_SIZE soups) */
+  completed: boolean;
+  /** Steps played: the completion time if completed, else the step limit */
+  steps: number;
+  /** Step limit (HORIZON) */
+  limit: number;
+  soups: number | null;
+};
+
+/**
+ * A finisher's bonus: BONUS_PER_SOUP x team soups, plus BONUS_SPEED_PER_ROUND x
+ * (1 - steps / limit) per completed order; capped at BONUS_MAX, rounded to
+ * cents. null if the study has no bonus.
+ */
+export function bonusFor(soups: number | null, trials: TrialResult[] = []): number | null {
+  const parts: number[] = [];
+  if (bonusPerSoup !== null && soups !== null) parts.push(bonusPerSoup * soups);
+  if (bonusSpeedPerRound !== null) {
+    parts.push(trials.reduce((sum, t) => sum + (t.completed ? bonusSpeedPerRound * Math.max(0, 1 - t.steps / t.limit) : 0), 0));
+  }
+  if (!parts.length) return null;
+  const total = parts.reduce((a, b) => a + b, 0);
+  const amount = bonusMax === null ? total : Math.min(total, bonusMax);
   return Math.round(amount * 100) / 100;
 }
 
@@ -68,8 +102,28 @@ if (!GAMES.includes(game)) {
   console.error(`[config] GAME must be one of ${GAMES.join(", ")} (got "${process.env.GAME}")`);
   process.exit(1);
 }
-/** Overcooked layout: sidecar/layouts/<LAYOUT>.txt */
+/** Overcooked layout: sidecar/layouts/<LAYOUT>.txt, or a JaxMARL layout (e.g. scaling_kitchen) */
 const layout = game === "overcooked" ? (process.env.LAYOUT?.trim() || "open_room") : null;
+
+function configError(message: string): never {
+  console.error(`[config] ${message}`);
+  process.exit(1);
+}
+
+/** One round's kitchen (Overcooked): number of pots and cooking time in steps, e.g. "p5_c60" */
+export type RoundCondition = { id: string; num_pots: number; pot_cook_time: number };
+const CONDITION_RE = /^p(\d{1,2})_c(\d{1,5})$/;
+function parseCondition(raw: string, setting: string): RoundCondition {
+  const id = raw.trim();
+  const m = CONDITION_RE.exec(id);
+  if (!m || Number(m[1]) < 1 || Number(m[2]) < 1) {
+    configError(`${setting}: "${id}" should look like p5_c60 (5 pots, soups cook for 60 steps)`);
+  }
+  return { id, num_pots: Number(m[1]), pot_cook_time: Number(m[2]) };
+}
+
+/** The scaling sweep's rules, shared by every round (Overcooked); sent to the sidecar */
+export type OvercookedRules = { order_size: number | null; recipe_size: number; pot_placement: "nearest" | "spread"; no_collision: boolean };
 
 const intOr = (v: string | undefined, fallback: number) => {
   const n = Math.floor(Number(v));
@@ -164,8 +218,36 @@ export function setLiveSettings(next: LiveSettings) {
   Object.assign(live, next);
   return changes;
 }
-/** Rounds each group plays */
-const rounds = Math.max(1, Math.floor(Number(process.env.ROUNDS ?? 1)) || 1);
+const roundConditions: RoundCondition[] | null = game === "overcooked" && process.env.ROUND_CONDITIONS?.trim()
+  ? process.env.ROUND_CONDITIONS.split(",").filter((c) => c.trim()).map((c) => parseCondition(c, "ROUND_CONDITIONS"))
+  : null;
+const conditionOrder = process.env.CONDITION_ORDER?.trim() || "rotate";
+if (conditionOrder !== "rotate" && conditionOrder !== "fixed") configError(`CONDITION_ORDER must be rotate or fixed (got "${conditionOrder}")`);
+
+/** Rounds each group plays: one per ROUND_CONDITIONS entry, else ROUNDS */
+const roundsSetting = process.env.ROUNDS?.trim();
+if (roundConditions && roundsSetting && Number(roundsSetting) !== roundConditions.length) {
+  configError(`ROUNDS=${roundsSetting} but ROUND_CONDITIONS lists ${roundConditions.length} rounds; remove ROUNDS or make them match`);
+}
+const rounds = roundConditions ? roundConditions.length : Math.max(1, Math.floor(Number(roundsSetting || 1)) || 1);
+
+/** A group's rounds in order: rotate starts room k at entry k (Latin square), fixed keeps the list */
+export function conditionsFor(roomNum: number): RoundCondition[] | null {
+  if (!roundConditions) return null;
+  if (conditionOrder === "fixed") return roundConditions;
+  const k = (roomNum - 1) % roundConditions.length;
+  return [...roundConditions.slice(k), ...roundConditions.slice(0, k)];
+}
+
+const rules: OvercookedRules | null = game === "overcooked" ? (() => {
+  const order = optionalInt(process.env.ORDER_SIZE);
+  if (order !== null && order < 1) configError("ORDER_SIZE must be at least 1 (or empty: play every round to HORIZON)");
+  const recipe = intOr(process.env.RECIPE_SIZE, 3);
+  if (recipe < 1 || recipe > 3) configError("RECIPE_SIZE must be 1, 2 or 3 (onions per soup)");
+  const placement = process.env.POT_PLACEMENT?.trim() || "nearest";
+  if (placement !== "nearest" && placement !== "spread") configError(`POT_PLACEMENT must be nearest or spread (got "${placement}")`);
+  return { order_size: order, recipe_size: recipe, pot_placement: placement, no_collision: envBool("NO_COLLISION", false) };
+})() : null;
 
 /** Solo practice before the lobby  */
 const practice = {
@@ -177,7 +259,13 @@ const practice = {
   minSoups: Math.max(0, intOr(process.env.PRACTICE_MIN_SOUPS, 1)),
   /** From the start of practice; 0 = no limit */
   timeLimitMs: Math.max(0, intOr(process.env.PRACTICE_TIME_LIMIT_MS, 600_000)),
+  /** Practice kitchen's pots and cooking time, e.g. p1_c20 (null = the layout's) */
+  condition: process.env.PRACTICE_CONDITION?.trim() ? parseCondition(process.env.PRACTICE_CONDITION, "PRACTICE_CONDITION") : null,
 };
+/** Practice rules: the study's, but an attempt ends as soon as it has served the soups needed to pass */
+const practiceRules: OvercookedRules | null = rules
+  ? { ...rules, order_size: rules.order_size !== null && practice.minSoups > 0 ? practice.minSoups : null }
+  : null;
 const seed = Number(process.env.SEED ?? 123);
 const seedPerRoom = envBool("SEED_PER_ROOM", false);
 
@@ -209,9 +297,13 @@ export const studyConfig = {
   seed,
   seedPerRoom,
   rounds,
+  roundConditions,
+  conditionOrder,
+  rules,
   practice,
+  practiceRules,
   completionUrl: envUrl("COMPLETION_URL"),
-  bonus: { perSoup: bonusPerSoup, max: bonusMax },
+  bonus: { perSoup: bonusPerSoup, speedPerRound: bonusSpeedPerRound, max: bonusMax },
   payment: {
     aborted: { paid: envBool("PAY_ABORTED", true), completionUrl: envUrl("ABORTED_COMPLETION_URL") },
     no_group: { paid: envBool("PAY_NO_GROUP", true), completionUrl: envUrl("NO_GROUP_COMPLETION_URL") },
@@ -221,9 +313,11 @@ export const studyConfig = {
 };
 
 export function studyInfo() {
-  const { studyName, condition, configFile, code, game, layout, seed, seedPerRoom, rounds, payment, bonus } = studyConfig;
+  const { studyName, condition, configFile, code, game, layout, seed, seedPerRoom, rounds, payment, bonus,
+    roundConditions, conditionOrder, rules, practiceRules } = studyConfig;
   return {
     studyName, condition, configFile, code, game, layout, seed, seedPerRoom, rounds, bonus,
+    roundConditions, conditionOrder, rules, practiceRules,
     playersPerRoom: live.groupSize,
     minGroupSize: minGroupSizeFor(live.groupSize),
     minStartSize: live.minStartSize,
@@ -265,13 +359,27 @@ export function checkStudyConfig() {
     `${timeout}; ${live.maxRooms === null ? "unlimited rooms" : `at most ${live.maxRooms} room(s)`}; ` +
     `pay aborted=${payment.aborted.paid}, no_group=${payment.no_group.paid}, practice_timeout=${payment.practice_timeout.paid}, dropped=${payment.dropped.paid}`);
   if (live.minStartSize !== null) console.log(`[config] at the lobby timeout, groups of at least ${live.minStartSize} start short`);
-  if (bonusPerSoup !== null) {
-    console.log(`[config] bonus: ${bonusPerSoup} per soup the team serves${bonusMax === null ? " (no cap)" : `, at most ${bonusMax}`}`);
+  if (roundConditions) {
+    console.log(`[config] rounds: ${roundConditions.map((c) => c.id).join(", ")} (${conditionOrder === "rotate" ? "order rotated across groups" : "same order for every group"})`);
+  }
+  if (rules) {
+    console.log(`[config] rules: ${rules.order_size === null ? "no order (rounds run to HORIZON)" : `round ends after ${rules.order_size} soups`}; ` +
+      `${rules.recipe_size} onion(s) per soup; pots placed ${rules.pot_placement}; collisions ${rules.no_collision ? "off" : "on"}`);
+  }
+  if (bonusPerSoup !== null || bonusSpeedPerRound !== null) {
+    const parts = [
+      ...(bonusPerSoup !== null ? [`${bonusPerSoup} per soup the team serves`] : []),
+      ...(bonusSpeedPerRound !== null ? [`up to ${bonusSpeedPerRound} per completed order (x share of the time limit left)`] : []),
+    ];
+    console.log(`[config] bonus: ${parts.join(" + ")}${bonusMax === null ? " (no cap)" : `, at most ${bonusMax}`}`);
   } else if (bonusMax !== null) {
-    console.warn("[config] BONUS_MAX is set but BONUS_PER_SOUP isn't: no bonus will be shown or logged.");
+    console.warn("[config] BONUS_MAX is set but no bonus rate (BONUS_PER_SOUP, BONUS_SPEED_PER_ROUND): no bonus will be shown or logged.");
+  }
+  if (bonusSpeedPerRound !== null && rules?.order_size == null) {
+    console.warn("[config] BONUS_SPEED_PER_ROUND needs ORDER_SIZE (a round must be completable): the speed bonus will always be 0.");
   }
   if (practice.enabled) {
-    console.log(`[config] solo practice: ${practice.layout}, ${practice.horizon} steps per attempt, ` +
+    console.log(`[config] solo practice: ${practice.layout}${practice.condition ? ` ${practice.condition.id}` : ""}, ${practice.horizon} steps per attempt, ` +
       `pass = ${practice.minSoups} soup(s) in one attempt, time limit ${practice.timeLimitMs ? `${Math.round(practice.timeLimitMs / 1000)}s` : "none"}`);
   }
 }

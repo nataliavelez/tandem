@@ -34,7 +34,7 @@ Created by: Elizabeth Mieczkowski, Updated: 10/2026
 */}
 import { GameRoom, type GameRoomOptions } from "./gameRoom";
 import type { AgentID, EndInfo, PlayerID, RoomID, ServerEvent } from "../../../shared/types";
-import { endInfo, live, minGroupSizeFor, studyConfig } from "../studyConfig";
+import { endInfo, live, minGroupSizeFor, studyConfig, type TrialResult } from "../studyConfig";
 
 const LOBBY_GRACE_MS = Number(process.env.LOBBY_GRACE_MS ?? 10_000);
 
@@ -54,7 +54,7 @@ export class RoomManager {
   /** Participants who can't continue, and why */
   private ended = new Map<PlayerID, EndInfo>();
   /** Participants who played every round */
-  private finished = new Map<PlayerID, { roomId: RoomID; rounds: number; soups: number | null; at: number; completedAt: number | null }>();
+  private finished = new Map<PlayerID, { roomId: RoomID; rounds: number; soups: number | null; trials: TrialResult[]; at: number; completedAt: number | null }>();
   private nextRoomNum = 1;
   /** When each participant waiting in a lobby got their seat */
   private lobbyJoinedAt = new Map<PlayerID, number>();
@@ -364,7 +364,7 @@ export class RoomManager {
   private finishRoom(room: GameRoom) {
     const now = Date.now();
     for (const pid of room.playerIds()) {
-      this.finished.set(pid, { roomId: room.id, rounds: room.trialsCompleted, soups: room.totalSoups, at: now, completedAt: null });
+      this.finished.set(pid, { roomId: room.id, rounds: room.trialsCompleted, soups: room.totalSoups, trials: room.trialResults, at: now, completedAt: null });
     }
     for (const pid of room.playerIds()) {
       if (this.graceTimers.has(pid)) this.leave(pid, "finished");

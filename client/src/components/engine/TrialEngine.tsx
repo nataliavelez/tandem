@@ -218,6 +218,9 @@ function renderTrial(currentTrial: TrialConfig, currentIndex: number, advance: (
           round={round}
           durationMs={durationMs}
           onNext={advance}
+          label={currentTrial.label}
+          breakSeconds={currentTrial.breakSeconds}
+          breakText={currentTrial.breakText}
         />
       );
     }

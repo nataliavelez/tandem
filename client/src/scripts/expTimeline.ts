@@ -30,19 +30,26 @@ By participating in this research you are indicating that you are at least 18 ye
         id: "overcooked-instructions",
         type: "instructions",
         allowBack: true,
+        // Keep in sync with the server's study settings: 4 rounds (ROUND_CONDITIONS),
+        // ORDER_SIZE=10, RECIPE_SIZE=1, HORIZON 1500 x TICK_MS 100 = 2 min 30 s,
+        // BONUS_SPEED_PER_ROUND=0.50
         pages: [
             {
                 text: `In this game, you and the other participants are cooks in a shared kitchen.
 
-Together, your team's goal is to serve as many onion soups as possible before time runs out. Every soup served earns the team 20 points.
+You will play 4 rounds. In each round, your team gets an order of 10 onion soups. The round ends as soon as your team has served all 10, or when time runs out (2 minutes 30 seconds).
 
-First, you'll practice on your own in a small kitchen. Once you've served a soup there, we'll match you with your team.`,
+The faster your team completes each order, the bigger your bonus: up to $0.50 per round.
+
+Between rounds, the kitchen changes: it may have a different number of pots, and soups may take a different amount of time to cook.
+
+First, you'll practice on your own in the same kitchen. Once you've served a soup there, we'll match you with your team.`,
             },
             {
                 text: `How to make an onion soup:
 
 1. Pick up an onion from an onion crate (yellow onions).
-2. Put it in a pot (dark circle). A pot needs 3 onions; it starts cooking by itself once it has 3.
+2. Put it in a pot (dark circle). One onion makes a soup: it starts cooking by itself.
 3. While the soup cooks (an orange ring fills up), get a plate from the plate stack (white).
 4. When the soup is ready (green ring), use your plate on the pot to scoop up the soup.
 5. Carry the soup to a SERVE counter (green) and use it to serve.
@@ -62,18 +69,47 @@ Your own cook is marked YOU. The others are your teammates, numbered 1 and up. C
         ],
     },
     {
-        // Solo practice in a small kitchen; must serve a soup before the lobby.
+        // Solo practice in the study kitchen with one pot (server: PRACTICE_LAYOUT,
+        // PRACTICE_CONDITION); must serve a soup before the lobby.
         id: "practice",
         type: "practice",
+        intro: "Before you join your team, practice on your own in the kitchen you'll play in, with one pot. Serve a soup to continue. You can try as many times as you need.",
     },
     {
         id: "waiting-room",
         type: "waiting-room",
     },
+    // One screen per round (server: ROUND_CONDITIONS; each group plays the
+    // conditions in a rotated order). The countdown before rounds 2-4 runs by itself.
     {
         id: "game-1",
         type: "game",
         round: 1,
+        label: "Round 1 of 4",
+    },
+    {
+        id: "game-2",
+        type: "game",
+        round: 2,
+        label: "Round 2 of 4",
+        breakSeconds: 5,
+        breakText: "Next round! The kitchen may have a different number of pots, and soups may take a different time to cook.",
+    },
+    {
+        id: "game-3",
+        type: "game",
+        round: 3,
+        label: "Round 3 of 4",
+        breakSeconds: 5,
+        breakText: "Next round! The kitchen may have a different number of pots, and soups may take a different time to cook.",
+    },
+    {
+        id: "game-4",
+        type: "game",
+        round: 4,
+        label: "Round 4 of 4 (last round)",
+        breakSeconds: 5,
+        breakText: "Last round! The kitchen may have a different number of pots, and soups may take a different time to cook.",
     },
     {
         // End survey, page 1: background. Every question is optional.
@@ -187,11 +223,11 @@ Your own cook is marked YOU. The others are your teammates, numbered 1 and up. C
         ],
     },
     {
-        // Thanks, the bonus (server: BONUS_PER_SOUP / BONUS_MAX) and the return to Prolific
+        // Thanks, the bonus (server: BONUS_SPEED_PER_ROUND / BONUS_MAX) and the return to Prolific
         id: "completion",
         type: "completion",
         title: "Thank you for participating in our study!",
-        bonusText: "Your team served {soups}, so your bonus will be ${bonus}. It will be paid through Prolific.",
+        bonusText: "Your team completed {orders}, so your bonus will be ${bonus}. It will be paid through Prolific.",
     }
 ];
 

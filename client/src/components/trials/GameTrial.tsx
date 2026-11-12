@@ -6,7 +6,8 @@ Inputs (props): { round: number; durationMs: number; onNext: () => void }
 Reads from context: socket, agentId, activeTrial (cached TRIAL_START: spec, start, duration, tickMs)
 
 Outputs:
-- Sends TRIAL_READY when mounted for this round
+- Sends TRIAL_READY when mounted for this round (after the breakSeconds
+  countdown, if any; a round already running skips it)
 - Countdown timer runs from activeTrial (TRIAL_START often arrives before this
   screen mounts, since WaitingRoom advances on it)
 - STATE_UPDATE: updates state; TRIAL_END: calls onNext()
@@ -28,19 +29,31 @@ type Props = {
   onNext: () => void;
   /** Heading (default "Round <round>") */
   label?: string;
+  /** "Get ready" countdown before signalling ready (seconds) */
+  breakSeconds?: number;
+  breakText?: string;
 };
 
-export function GameTrial({ round, durationMs, onNext, label }: Props) {
+export function GameTrial({ round, durationMs, onNext, label, breakSeconds = 0, breakText }: Props) {
   const { socket, addMessageListener, removeMessageListener, agentId, activeTrial } = useSocket();
 
   const [state, setState] = useState<PublicState | null>(null);
+  const [breakLeft, setBreakLeft] = useState(breakSeconds);
+  const onBreak = breakLeft > 0;
+
+  // Count down the break, then signal ready
+  useEffect(() => {
+    if (!onBreak) return;
+    const t = window.setTimeout(() => setBreakLeft((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [onBreak, breakLeft]);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   // Spec comes from the cached TRIAL_START, which may have arrived before this screen mounted
   const spec = activeTrial?.spec ?? null;
 
   // Signal ready on every (re)connected socket; a new socket may still be connecting
   useEffect(() => {
-    if (!socket) return;
+    if (!socket || onBreak) return;
     const msg: ClientEvent = {
       type: "TRIAL_READY",
       trialId: `game-trial-${round}`,
@@ -53,7 +66,7 @@ export function GameTrial({ round, durationMs, onNext, label }: Props) {
     }
     socket.addEventListener("open", sendReady, { once: true });
     return () => socket.removeEventListener("open", sendReady);
-  }, [socket, round, durationMs]);
+  }, [socket, round, durationMs, onBreak]);
 
   // Countdown, driven by the active trial (works whether TRIAL_START came before or after mount)
   useEffect(() => {
@@ -70,7 +83,11 @@ export function GameTrial({ round, durationMs, onNext, label }: Props) {
   // Listen for server events
   useEffect(() => {
     const handle = (message: ServerEvent) => {
-      if (message.type === "STATE_UPDATE") setState(message.state);
+      if (message.type === "STATE_UPDATE") {
+        setState(message.state);
+        // The round is already running (e.g. back after a refresh): no break
+        if (message.state.phase === "running") setBreakLeft(0);
+      }
       if (message.type === "TRIAL_END") onNext();
     };
     addMessageListener(handle);
@@ -79,6 +96,16 @@ export function GameTrial({ round, durationMs, onNext, label }: Props) {
 
   const running = state?.phase === "running" ? state : null;
   const minutes = timeLeft === null ? null : `${Math.floor(timeLeft / 60)}:${String(timeLeft % 60).padStart(2, "0")}`;
+
+  if (onBreak) {
+    return (
+      <div style={{ padding: "2rem", maxWidth: 640, margin: "0 auto", textAlign: "center" }}>
+        <h2>{label ?? `Round ${round}`}</h2>
+        {breakText && <p style={{ lineHeight: 1.5 }}>{breakText}</p>}
+        <p style={{ fontSize: "1.25rem", fontWeight: 700 }}>Starting in {breakLeft} s…</p>
+      </div>
+    );
+  }
 
   return (
     <div style={{ padding: 20, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif" }}>

@@ -6,7 +6,10 @@ participant's completion link.
 Created by: Elizabeth Mieczkowski, Updated: 10/2026
 */}
 
-export type CompletionResult = { completionUrl: string | null; reason?: string; soups?: number | null; bonus?: number | null };
+export type CompletionResult = {
+  completionUrl: string | null; reason?: string; soups?: number | null; bonus?: number | null;
+  orders?: { completed: number; total: number } | null;
+};
 
 const KEY = "tandem_completion";
 

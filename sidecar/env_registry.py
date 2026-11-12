@@ -76,15 +76,21 @@ def build_env(req) -> EnvHandle:
         )
         extra = {}
     elif req.task == "overcooked":
-        layout, rows = overcooked_task.load_layout(req.layout, req.num_agents)
+        layout, placed = overcooked_task.load_layout(req.layout, req.num_agents)
+        game = dict(num_pots=req.num_pots, pot_placement=req.pot_placement, pot_cook_time=req.pot_cook_time,
+                    recipe_size=req.recipe_size, order_size=req.order_size, no_collision=req.no_collision)
         # The layout's contents are part of the key, so editing a layout file recompiles
-        cfg = ("overcooked", req.layout, tuple(rows), req.num_agents, req.episode_horizon)
-        make = lambda: overcooked_task.make_env(layout, req.episode_horizon)
-        extra = {"layout": req.layout, "rows": rows}
+        base_rows = tuple(overcooked_task.read_layout(req.layout)[0]) if placed else ()
+        cfg = ("overcooked", req.layout, base_rows, req.num_agents, req.episode_horizon, tuple(sorted(game.items())))
+        make = lambda: overcooked_task.make_env(layout, req.episode_horizon, num_agents=req.num_agents,
+                                                agents_placed=placed, **game)
+        extra = {"layout": req.layout, "pot_placement": req.pot_placement if req.num_pots is not None else None}
     else:
         raise ValueError(f"unknown task {req.task!r}")
 
     env, reset_fn, step_fn = _compiled(cfg, make)
+    if req.task == "overcooked":
+        extra["rows"] = overcooked_task.static_rows(env)
     return EnvHandle(task=req.task, env=env, reset_fn=reset_fn, step_fn=step_fn,
                      key=jax.random.PRNGKey(req.seed), seed=req.seed,
                      episode_horizon=req.episode_horizon, extra=extra)
@@ -160,9 +166,12 @@ def env_spec(h: EnvHandle) -> Dict[str, Any]:
     )
 
 def overcooked_spec(h: EnvHandle) -> Dict[str, Any]:
-    fields = overcooked_task.spec_fields(h.env, h.extra["layout"], h.extra["rows"])
-    # Identifies the game config (not the seed): same layout/group/horizon = same hash
+    fields = overcooked_task.spec_fields(h.env, h.extra["layout"], h.extra["rows"], h.extra.get("pot_placement"))
+    # Identifies the game config (not the seed): same layout/group/horizon/settings = same hash
     hashed = {k: fields[k] for k in ("engine", "max_steps", "num_agents", "recipes", "start_cooking_interaction")}
+    # Sweep settings count only when they differ from the classic game, so classic configs keep their old hash
+    classic = {"pot_cook_time": 20, "recipe_size": 3, "order_size": None, "no_collision": False}
+    hashed.update({k: fields[k] for k, default in classic.items() if fields[k] != default})
     hashed["layout_rows"] = "/".join(fields["layout"]["rows"])
     hashed["spawns"] = fields["layout"]["spawns"]
     return dict(**fields, seed=h.seed, spec_hash=f"overcooked:{spec_hash(hashed)}", versions=VERSIONS)

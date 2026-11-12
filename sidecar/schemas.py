@@ -17,8 +17,15 @@ class CreateReq(BaseModel):
     num_landmarks: int = 3
     local_ratio: float = 0.5
     action_type: Literal["DISCRETE_ACT"] = "DISCRETE_ACT"
-    # overcooked only: name of sidecar/layouts/<layout>.txt
+    # overcooked only: sidecar/layouts/<layout>.txt, or a JaxMARL layout (e.g. scaling_kitchen)
     layout: str = "open_room"
+    # overcooked only, the scaling-sweep options (None = the layout's / engine's default)
+    num_pots: Optional[int] = Field(None, ge=1, le=30)
+    pot_placement: Literal["spread", "nearest"] = "nearest"  # only used with num_pots
+    pot_cook_time: Optional[int] = Field(None, ge=1, le=10_000)
+    recipe_size: int = Field(3, ge=1, le=3)                  # onions per soup
+    order_size: Optional[int] = Field(None, ge=1, le=1000)   # episode ends after this many soups
+    no_collision: bool = False
 
 class IdReq(BaseModel):
     env_id: str
@@ -68,6 +75,11 @@ class SpecResp(BaseModel):
     pot_cook_time: Optional[int] = None
     delivery_reward: Optional[float] = None
     start_cooking_interaction: Optional[bool] = None
+    recipe_size: Optional[int] = None
+    order_size: Optional[int] = None
+    num_pots: Optional[int] = None
+    pot_placement: Optional[str] = None
+    no_collision: Optional[bool] = None
 
 class StateResp(BaseModel):
     state: Dict

@@ -16,13 +16,14 @@ import { logEvent } from "../engine/DataLogger";
 
 type Props = { config: CompletionTrialConfig };
 
-/** config.bonusText with {bonus} and {soups} filled in, or null if there's no bonus */
+/** config.bonusText with {bonus}, {soups} and {orders} filled in, or null if there's no bonus */
 function bonusMessage(config: CompletionTrialConfig, result: CompletionResult | null): string | null {
   if (!config.bonusText || result?.bonus == null) return null;
   const soups = result.soups ?? 0;
   return config.bonusText
     .split("{bonus}").join(result.bonus.toFixed(2))
-    .split("{soups}").join(`${soups} soup${soups === 1 ? "" : "s"}`);
+    .split("{soups}").join(`${soups} soup${soups === 1 ? "" : "s"}`)
+    .split("{orders}").join(result.orders ? `${result.orders.completed} of ${result.orders.total} order${result.orders.total === 1 ? "" : "s"}` : "the study");
 }
 
 export function Completion({ config }: Props) {

@@ -4,7 +4,11 @@ Game lifecycle and sidecar interaction for ONE room (one group of players).
 - Agent seats (agent_0..agent_{N-1})
 - Ready set: starts a trial when every seat is filled and ready.
 - Runs a serialized tick loop (next step is scheduled after prev. sidecar call).
-- Resets env after each trial (next round starts from step 0).
+- Resets env after each trial (next round starts from step 0). With round
+  conditions (Overcooked: pots and cook time per round), the next round's
+  env is created instead when its condition differs.
+- Overcooked with an order (ORDER_SIZE): a round ends when the team has served
+  it; each round's result (completed, steps) is kept for the speed bonus.
 - After options.rounds rounds the room is done (isDone).
 - Holds a disconnected player's seat (markDisconnected) so they can come back
   (reattach); RoomManager decides how long to hold it.
@@ -18,7 +22,7 @@ Created by: Elizabeth Mieczkowski, Updated: 10/2026
 */}
 import { envCreate, envSpec, envReset, envStep, envClose } from "./sidecarClient";
 import { DataLog } from "./dataLog";
-import { endInfo, studyInfo } from "../studyConfig";
+import { endInfo, studyInfo, type OvercookedRules, type RoundCondition, type TrialResult } from "../studyConfig";
 import type {
   PublicState,
   TrialSpec,
@@ -48,8 +52,12 @@ export type GameRoomOptions = {
   horizon: number;
   /** MPE only */
   num_landmarks?: number;
-  /** Overcooked only: sidecar/layouts/<layout>.txt */
+  /** Overcooked only: sidecar/layouts/<layout>.txt, or a JaxMARL layout (e.g. scaling_kitchen) */
   layout?: string;
+  /** Overcooked only: the sweep's rules, the same every round (order size, recipe size, ...) */
+  rules?: OvercookedRules | null;
+  /** Overcooked only: each round's pots and cook time, in play order (round k uses entry (k-1) mod length) */
+  conditions?: RoundCondition[] | null;
   /** Rounds to play; after the last one the room is done (null = no limit, e.g. practice) */
   rounds: number | null;
   /** "group" = a study group (lobby, game); "practice" = one participant's solo practice kitchen */
@@ -85,10 +93,21 @@ type SidecarState = Record<string, unknown> & {
   episodeId: string;
 };
 
-function createParams(options: GameRoomOptions) {
+/** The condition a round is played in (rounds count from 1), or null. */
+export function conditionFor(options: GameRoomOptions, round: number): RoundCondition | null {
+  const list = options.conditions;
+  return list?.length ? list[(round - 1) % list.length] : null;
+}
+
+function createParams(options: GameRoomOptions, round = 1) {
   const base = { seed: options.seed, num_agents: options.num_agents, episode_horizon: options.horizon };
   if (options.game === "overcooked") {
-    return { ...base, task: "overcooked" as const, layout: options.layout ?? "open_room" };
+    const c = conditionFor(options, round);
+    return {
+      ...base, task: "overcooked" as const, layout: options.layout ?? "open_room",
+      ...(options.rules ?? {}),
+      ...(c ? { num_pots: c.num_pots, pot_cook_time: c.pot_cook_time } : {}),
+    };
   }
   return { ...base, task: "simple_spread" as const, num_landmarks: options.num_landmarks ?? 3, action_type: "DISCRETE_ACT" as const };
 }
@@ -98,8 +117,12 @@ function createParams(options: GameRoomOptions) {
  * once per config; doing it mid-study would stall rooms already playing).
  */
 export async function warmSidecar(options: GameRoomOptions) {
-  const { env_id } = await envCreate(createParams(options));
-  await envClose(env_id);
+  // Every condition a round can be played in (the first one if there are none)
+  const rounds = Math.max(1, options.conditions?.length ?? 1);
+  for (let round = 1; round <= rounds; round++) {
+    const { env_id } = await envCreate(createParams(options, round));
+    await envClose(env_id);
+  }
 }
 
 export class GameRoom {
@@ -108,6 +131,12 @@ export class GameRoom {
   options: GameRoomOptions;
   envId: string | null = null;
   spec: TrialSpec | null = null;
+  /** Condition the current env was built for (null = none / no conditions) */
+  private envConditionId: string | null = null;
+  /** Each finished round's result (Overcooked), for the speed bonus */
+  private results: TrialResult[] = [];
+  /** Soups served so far this round (Overcooked state's delivered) */
+  private delivered = 0;
 
   /** In-flight or completed env init; reset to null on failure so it can be retried. */
   private initPromise: Promise<void> | null = null;
@@ -178,6 +207,8 @@ export class GameRoom {
   get trialsCompleted() { return this.trialCount - (this.running ? 1 : 0); }
   /** Overcooked: soups served over all finished trials (null for MPE); the finishers' bonus is based on it */
   get totalSoups() { return this.soupsTotal; }
+  /** Each finished round's result: condition, order completed, steps used */
+  get trialResults(): TrialResult[] { return this.results.map((r) => ({ ...r })); }
   playerIds(): PlayerID[] { return [...this.seats.keys()]; }
   /** Can a new player be placed here? */
   get isOpen() { return !this.locked && !this.disposed && this.seats.size < this.capacity; }
@@ -315,20 +346,25 @@ export class GameRoom {
     return this.initPromise;
   }
 
-  private async init() {
-    const gen = this.envGen;
+  /** Create (and reset) the env for a round; closes it again if any call fails. */
+  private async createEnv(round: number): Promise<{ envId: string; spec: TrialSpec; resetState: SidecarState }> {
     let envId: string | null = null;
-    let spec: TrialSpec, resetState: SidecarState;
     try {
-      const create = await envCreate(createParams(this.options));
+      const create = await envCreate(createParams(this.options, round));
       envId = create.env_id as string;
-      spec = await envSpec(envId);
-      resetState = (await envReset(envId)).state;
+      const spec = await envSpec(envId);
+      const resetState = (await envReset(envId)).state;
+      return { envId, spec, resetState };
     } catch (e) {
       // Don't leak a half-initialized env in the sidecar
       if (envId) await envClose(envId).catch(() => {});
       throw e;
     }
+  }
+
+  private async init() {
+    const gen = this.envGen;
+    const { envId, spec, resetState } = await this.createEnv(this.trialCount + 1);
     // Room disposed, or resized, while we were waiting on the sidecar: this env is not needed
     if (this.disposed || gen !== this.envGen) {
       await envClose(envId).catch(() => {});
@@ -337,6 +373,38 @@ export class GameRoom {
     this.envId = envId;
     this.spec = spec;
     this.resetState = resetState;
+    this.envConditionId = conditionFor(this.options, this.trialCount + 1)?.id ?? null;
+  }
+
+  /** Is the current env built and reset for this round? */
+  private readyFor(round: number) {
+    return !!this.envId && !!this.resetState && this.envConditionId === (conditionFor(this.options, round)?.id ?? null);
+  }
+
+  /**
+   * Get the env ready for a round: reset it, or, if the round's condition
+   * differs (other pots / cook time), replace it with a new env for that condition.
+   */
+  private async prepareRound(round: number) {
+    const wantId = conditionFor(this.options, round)?.id ?? null;
+    if (this.envId && this.envConditionId === wantId) {
+      this.resetState = (await envReset(this.envId)).state;
+      return;
+    }
+    const old = this.envId;
+    this.envId = null;
+    this.spec = null;
+    this.resetState = null;
+    if (old) void envClose(old).catch(() => {});
+    const { envId, spec, resetState } = await this.createEnv(round);
+    if (this.disposed) {
+      await envClose(envId).catch(() => {});
+      return;
+    }
+    this.envId = envId;
+    this.spec = spec;
+    this.resetState = resetState;
+    this.envConditionId = wantId;
   }
 
   /**
@@ -402,9 +470,9 @@ export class GameRoom {
       // Players can be ready again before the post-trial reset returns; a second
       // reset then would skip an episode and could log the wrong initialState
       if (this.resetting) await this.resetting;
-      // The reset after the last trial failed: without one, this trial would
-      // start at the old episode's end and stop at once
-      if (!this.resetState && this.envId) this.resetState = (await envReset(this.envId)).state;
+      // The reset / new env after the last trial failed: without it, this trial would
+      // start at the old episode's end (and stop at once) or in the wrong condition
+      if (!this.readyFor(this.trialCount + 1)) await this.prepareRound(this.trialCount + 1);
     } catch (e: any) {
       this.starting = false;
       this.startRetries++;
@@ -426,6 +494,12 @@ export class GameRoom {
     this.beginTrial();
   }
 
+  /** The team has served this round's whole order (Overcooked with ORDER_SIZE). */
+  private get orderComplete() {
+    const size = this.spec?.game === "overcooked" ? this.spec.order_size : null;
+    return size != null && this.delivered >= size;
+  }
+
   /** Synchronous so two callers can never both start a trial. */
   private beginTrial() {
     if (this.running || !this.spec) return;
@@ -435,6 +509,8 @@ export class GameRoom {
     this.trialCount++;
     this.clearActions();
     this.score = 0;
+    this.delivered = 0;
+    const condition = conditionFor(this.options, this.trialCount);
 
     const startMsg: TrialStartMsg = {
       type: "TRIAL_START",
@@ -449,6 +525,7 @@ export class GameRoom {
     this.stepStats = { last: 0, max: 0, sum: 0, n: 0, overruns: 0 };
     this.log.write("trial_start", {
       trial: this.trialCount,
+      condition,
       startTimestamp: startMsg.startTimestamp,
       duration: startMsg.duration,
       spec: this.spec,
@@ -475,7 +552,7 @@ export class GameRoom {
     if (!this.running || !this.envId || !this.spec) return;
 
     let finishedEpisode: string | null = null;
-    let endReason: "horizon" | "done" = "horizon";
+    let endReason: "horizon" | "done" | "order_complete" = "horizon";
     const actions: Record<string, number> = {};
     for (let i = 0; i < this.capacity; i++) {
       const a = `agent_${i}` as AgentID;
@@ -492,6 +569,8 @@ export class GameRoom {
 
       const running = this.toRunning(stepResp.state as SidecarState, stepResp.rewards ?? {});
       this.lastStep = running.step;
+      const delivered = (stepResp.state as { delivered?: unknown }).delivered;
+      if (typeof delivered === "number") this.delivered = delivered;
 
       const serverTime = Date.now();
       this.broadcast({
@@ -523,7 +602,7 @@ export class GameRoom {
       const limit = this.spec.max_steps ?? this.options.horizon;
       if (running.step >= limit || stepResp.dones?.__all__) {
         finishedEpisode = running.episodeId;
-        endReason = running.step >= limit ? "horizon" : "done";
+        endReason = this.orderComplete ? "order_complete" : running.step >= limit ? "horizon" : "done";
       }
     } catch (e: any) {
       this.consecutiveErrors++;
@@ -565,7 +644,22 @@ export class GameRoom {
     const reward = this.spec?.game === "overcooked" ? this.spec.delivery_reward : null;
     const soups = reward ? Math.round(this.score / reward) : null;
     if (soups !== null) this.soupsTotal = (this.soupsTotal ?? 0) + soups;
-    this.log.write("trial_end", { trial: this.trialCount, episodeId, reason, score: this.score, soups, players: this.seatSummary() });
+    const condition = conditionFor(this.options, this.trialCount);
+    const orderSize = this.spec?.game === "overcooked" ? this.spec.order_size ?? null : null;
+    const result: TrialResult = {
+      trial: this.trialCount,
+      condition: condition?.id ?? null,
+      completed: this.orderComplete,
+      steps: this.lastStep,
+      limit: this.spec?.max_steps ?? this.options.horizon,
+      soups,
+    };
+    this.results.push(result);
+    this.log.write("trial_end", {
+      trial: this.trialCount, episodeId, reason, score: this.score, soups,
+      ...(this.options.game === "overcooked" ? { condition, orderSize, delivered: this.delivered, completed: result.completed, steps: result.steps, limit: result.limit } : {}),
+      players: this.seatSummary(),
+    });
 
     this.broadcast({ type: "TRIAL_END", trialId: episodeId });
     this.hooks.onTrialEnd?.({ trial: this.trialCount, score: this.score, soups });
@@ -579,12 +673,12 @@ export class GameRoom {
       return;
     }
 
-    // Reset now so the next round starts at step 0 (otherwise it ends immediately)
-    if (this.envId && !this.disposed) {
-      const envId = this.envId;
-      this.resetting = envReset(envId)
-        .then((r) => { this.resetState = r.state; })
-        .catch((e) => { console.error(`[room ${this.id}] reset after trial failed:`, e); })
+    // Reset now so the next round starts at step 0 (otherwise it ends immediately),
+    // or build the next round's env if its condition differs
+    if (!this.disposed) {
+      this.resetState = null;
+      this.resetting = this.prepareRound(this.trialCount + 1)
+        .catch((e) => { console.error(`[room ${this.id}] getting round ${this.trialCount + 1} ready failed:`, e?.message ?? e); })
         .finally(() => { this.resetting = null; });
       await this.resetting;
     }
@@ -639,6 +733,8 @@ export class GameRoom {
       trialStartedAt: this.running ? this.trialStartedAt : null,
       step: this.running ? this.lastStep : null,
       horizon: this.spec?.max_steps ?? this.options.horizon,
+      condition: this.running ? conditionFor(this.options, this.trialCount)?.id ?? null : null,
+      delivered: this.running && this.options.game === "overcooked" ? this.delivered : null,
       tickMs: TICK_MS,
       score: this.options.game === "overcooked" ? this.score : null,
       envReady: this.envId !== null,

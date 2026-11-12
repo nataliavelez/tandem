@@ -86,8 +86,11 @@ function LegendTile({ label, draw }: { label: string; draw: (ctx: CanvasRenderin
   );
 }
 
-export function OvercookedLegend({ potCookTime }: { potCookTime: number }) {
-  const ONION = 4, PLATE = 1, SOUP = 15, POT_FULL = 12, POT_READY = 14;
+/** recipeSize: onions per soup (item codes: onion count in bits 2-3, cooked bit 1, plate bit 0) */
+export function OvercookedLegend({ potCookTime, recipeSize = 3 }: { potCookTime: number; recipeSize?: number }) {
+  const ONION = 4, PLATE = 1;
+  const POT_FULL = recipeSize << 2, POT_READY = POT_FULL | 2, SOUP = POT_FULL | 3;
+  const partial = recipeSize - 1;
   const onFloor = (code: number) => (ctx: CanvasRenderingContext2D, s: number) => {
     drawTile(ctx, " ", 0, 0, s);
     drawItem(ctx, code, s / 2, s / 2, s * 0.3);
@@ -103,7 +106,7 @@ export function OvercookedLegend({ potCookTime }: { potCookTime: number }) {
       <LegendTile label="Onion" draw={onFloor(ONION)} />
       <LegendTile label="Plates" draw={tile("B")} />
       <LegendTile label="Plate" draw={onFloor(PLATE)} />
-      <LegendTile label="Pot, 2 onions" draw={pot(8, 0)} />
+      {partial > 0 && <LegendTile label={`Pot, ${partial} onion${partial === 1 ? "" : "s"}`} draw={pot(partial << 2, 0)} />}
       <LegendTile label="Pot, cooking" draw={pot(POT_FULL, Math.ceil(potCookTime / 2))} />
       <LegendTile label="Soup ready" draw={pot(POT_READY, 0)} />
       <LegendTile label="Soup on plate" draw={onFloor(SOUP)} />

@@ -1,5 +1,6 @@
 # Exact Python packages for the sidecar (Python 3.10), from the environment the
-# tests pass in (pip freeze, 2026-10-21). jaxmarl itself is not listed: deploy/setup.sh
+# tests pass in (pip freeze, 2026-10-21; jaxtyping + wadler_lindig added 2026-11-12
+# for the lab JaxMARL fork). jaxmarl itself is not listed: deploy/setup.sh
 # clones it at the pinned commit (deploy/versions.env) and installs it with --no-deps.
 # Regenerate after changing packages: pip freeze | grep -v jaxmarl > sidecar/requirements-lock.txt
 absl-py==2.3.1
@@ -42,6 +43,7 @@ itsdangerous==2.2.0
 jax==0.4.38
 jaxlib==0.4.38
 jaxopt==0.8.5
+jaxtyping==0.3.7
 Jinja2==3.1.6
 kiwisolver==1.4.9
 markdown-it-py==4.0.0
@@ -95,6 +97,7 @@ tzdata==2025.2
 urllib3==2.5.0
 uvicorn==0.30.3
 uvloop==0.22.1
+wadler_lindig==0.1.8
 watchfiles==1.1.1
 websockets==15.0.1
 Werkzeug==3.1.3

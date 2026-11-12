@@ -48,6 +48,8 @@ build_app() {
 
   log "JaxMARL at $JAXMARL_COMMIT"
   [ -d "$APP/jaxmarl/.git" ] || as_app git clone "$JAXMARL_REPO" "$APP/jaxmarl"
+  # An existing clone may point elsewhere (e.g. upstream before the switch to the lab fork)
+  as_app git -C "$APP/jaxmarl" remote set-url origin "$JAXMARL_REPO"
   as_app git -C "$APP/jaxmarl" fetch origin
   as_app git -C "$APP/jaxmarl" checkout --detach "$JAXMARL_COMMIT"
   as_app uv pip install --python "$VENV/bin/python" --no-deps -e "$APP/jaxmarl"

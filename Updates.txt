@@ -1262,3 +1262,101 @@ KNOWN ISSUES (open, additions)
 - A non-zero bonus from a real game has only been checked through the
   arithmetic test and the screen check: the test bots don't cook. Check one on
   the droplet's first full run.
+
+================================================================================
+2026-11-12 (cont.) — Rounds in the scaling-sweep design (pots x cook time, orders)
+================================================================================
+
+[feature] The sidecar runs the lab JaxMARL fork at the pots x order sweep's
+      commit (emieczkowski/JaxMARL, scaling branch, 3813f07), so people play
+      the sweep's game exactly. New Overcooked create options, passed to the
+      engine as the sweep does: num_pots + pot_placement (nearest | spread),
+      pot_cook_time, recipe_size, order_size (episode ends after that many
+      correct deliveries) and no_collision. Layouts can be a JaxMARL layout
+      (scaling_kitchen; agents placed by Layout.with_num_agents, as in the
+      sweep) besides the sidecar's text files. The spec's grid is read from
+      the env, so added pots show; the spec also carries recipe_size,
+      order_size, num_pots, pot_placement, no_collision and the env's real
+      pot_cook_time. Each state carries delivered (soups served this
+      episode). spec_hash is unchanged for classic configs. Adapted to the
+      fork's API (State step / done / num_delivered, OvercookedActionsEnum).
+      Files: sidecar/overcooked_task.py, sidecar/env_registry.py,
+      sidecar/schemas.py, sidecar/requirements-lock.txt (jaxtyping 0.3.7,
+      wadler_lindig 0.1.8), deploy/versions.env (fork + commit), deploy/lib.sh
+      (an existing JaxMARL clone is pointed at the new repo before fetching)
+
+[feature] Per-round conditions on the server. ROUND_CONDITIONS lists each
+      round's kitchen as p<pots>_c<cook steps> (ROUNDS = their number; a
+      mismatching ROUNDS stops the server); CONDITION_ORDER=rotate starts
+      group k at entry k (Latin square), fixed keeps the list. Shared rules:
+      ORDER_SIZE, RECIPE_SIZE, POT_PLACEMENT (default nearest), NO_COLLISION.
+      A room builds each round's env (a new one when the condition changes,
+      else a reset), and all conditions are compiled at startup for every
+      group size. A round ends when the order is served (trial_end reason
+      order_complete) or at HORIZON; trial_start logs the condition;
+      trial_end logs condition, orderSize, delivered, completed, steps and
+      limit; ticks log delivered. Practice: PRACTICE_CONDITION (e.g. p1_c20)
+      in PRACTICE_LAYOUT, and with ORDER_SIZE an attempt ends as soon as it
+      has served PRACTICE_MIN_SOUPS. Admin snapshot shows the current
+      condition and soups delivered. Startup prints rounds and rules.
+      Files: server/src/studyConfig.ts, server/src/game/gameRoom.ts,
+      server/src/game/roomManager.ts, server/src/game/sidecarClient.ts,
+      server/src/index.ts, shared/types.ts, server/studies/example.env
+
+[feature] Speed bonus: BONUS_SPEED_PER_ROUND x (1 - steps used / HORIZON) for
+      each round whose order the team completed (plus BONUS_PER_SOUP x soups
+      if set), capped at BONUS_MAX. COMPLETION and study_completed carry
+      orders { completed, total }; study_completed also lists each round's
+      result. Thank-you text placeholder {orders} ("3 of 4 orders").
+      Files: server/src/studyConfig.ts (bonusFor, TrialResult),
+      server/src/index.ts, client/src/components/trials/Completion.tsx,
+      client/src/context/completion.ts, client/types.ts
+
+[feature] Client for the sweep design: 4 rounds ("Round 2 of 4"); before
+      rounds 2-4 a 5-second "get ready" countdown that starts the round by
+      itself (a Continue button would let one idle player hold up the group);
+      an order panel ("3 / 10 soups served. The round ends when your team
+      serves 10 soups."); recipe text and legend follow the recipe size (1
+      onion: no partial-pot entry). Instructions rewritten for 4 rounds,
+      orders of 10 soups, the 2 min 30 s limit, the speed bonus and changing
+      kitchens; 1-onion recipe; practice intro for the study kitchen.
+      Files: client/types.ts (GameTrialConfig: label, breakSeconds,
+      breakText), client/src/components/trials/GameTrial.tsx,
+      client/src/components/trials/OvercookedView.tsx,
+      client/src/components/ui/GameBoard/OvercookedCanvas.tsx,
+      client/src/components/engine/TrialEngine.tsx,
+      client/src/scripts/expTimeline.ts
+
+[test] sidecar/test_overcooked.py (+6, 25 sidecar tests incl. MPE, all pass
+      on the fork): sweep kitchen pots for P = 1, 2, 5, 10 at the "nearest"
+      cells, piles / delivery / plates and spawns as in the sweep; settings
+      change spec_hash; too many pots / bad recipe or order size rejected; a
+      scripted cook serves a 1-onion soup and the order of 1 ends the episode
+      (done, delivered 1, order_completed); an order of 2 doesn't end; the
+      pot timer follows pot_cook_time. Public states round-trip exactly.
+      server/test/rounds.js (new, 27 checks; in test:all): practice in the
+      sweep kitchen ends on the serving step; group 1 plays p1_c5, p2_c20,
+      p5_c60 with the right kitchens, served rounds end on the serving step,
+      an idle round runs to HORIZON; speed bonus and orders 2 of 3 on
+      COMPLETION and in study_completed; group 2 starts at p2_c20; logs
+      (conditions, rules, trial_end fields, ticks' delivered); bad ROUNDS /
+      condition / RECIPE_SIZE stop the server. test:all: all 11 suites pass.
+      Browser walkthrough (Chrome): instructions, practice in the sweep
+      kitchen played with the keyboard (passes), rounds 1-4 with the order
+      panel and the countdowns, thank-you "completed 0 of 4 orders, $0.00";
+      logs show each group's rotated conditions with the right pots / cook
+      times. tsc, eslint (changed files), vite build clean.
+
+KNOWN ISSUES (open, additions)
+- Engine detail (same in the sweep): the pot timer starts counting on the
+  step the last onion goes in, so it reads pot_cook_time - 1 after that step.
+- The instructions hardcode 4 rounds, 10 soups, 2 min 30 s and $0.50 per
+  round; keep them in sync with ROUND_CONDITIONS, ORDER_SIZE, HORIZON x
+  TICK_MS and BONUS_SPEED_PER_ROUND.
+- The info sheet says the bonus is "based on your score"; it now rewards
+  completion speed.
+- Conditions rotate as a simple Latin square (4 orders for 4 groups); not
+  balanced for carry-over effects.
+- One env step = one 100 ms tick, so cook times of 5 / 60 steps are 0.5 / 6 s
+  for people, while their moves are limited by key presses (at most one per
+  tick).

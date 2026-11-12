@@ -14,7 +14,7 @@ import { SidecarError } from "./game/sidecarClient";
 import { DataLog } from "./game/dataLog";
 import { backup } from "./backup";
 import {
-  studyConfig, studyInfo, endInfo, unseatedEndInfo, checkStudyConfig, bonusFor,
+  studyConfig, studyInfo, endInfo, unseatedEndInfo, checkStudyConfig, bonusFor, conditionsFor,
   live, fileSettings, minGroupSizeFor, validateSettings, setLiveSettings, type LiveSettings,
 } from "./studyConfig";
 import { createAdmin, type ParticipantInfo } from "./admin";
@@ -37,7 +37,9 @@ const roomOptions = (roomNum: number): GameRoomOptions => ({
   minGroupSize: minGroupSizeFor(live.groupSize),
   horizon: HORIZON,
   rounds: studyConfig.rounds,
-  ...(studyConfig.game === "overcooked" ? { layout: studyConfig.layout! } : { num_landmarks: 3 }),
+  ...(studyConfig.game === "overcooked"
+    ? { layout: studyConfig.layout!, rules: studyConfig.rules, conditions: conditionsFor(roomNum) }
+    : { num_landmarks: 3 }),
 });
 /** One participant's solo practice kitchen: unlimited attempts, same seed for everyone. */
 const practiceOptions = (): GameRoomOptions => ({
@@ -48,7 +50,13 @@ const practiceOptions = (): GameRoomOptions => ({
   minGroupSize: 1,
   horizon: studyConfig.practice.horizon,
   rounds: null,
-  ...(studyConfig.game === "overcooked" ? { layout: studyConfig.practice.layout } : { num_landmarks: 3 }),
+  ...(studyConfig.game === "overcooked"
+    ? {
+        layout: studyConfig.practice.layout,
+        rules: studyConfig.practiceRules,
+        conditions: studyConfig.practice.condition ? [studyConfig.practice.condition] : null,
+      }
+    : { num_landmarks: 3 }),
 });
 const rooms = new RoomManager({ group: roomOptions, practice: practiceOptions });
 
@@ -334,10 +342,14 @@ wss.on("connection", (ws) => {
             send(ws, { type: "COMPLETION", completionUrl: null, reason: "We have no record of you finishing the game." });
             return;
           }
-          const bonus = bonusFor(finished.soups);
+          const bonus = bonusFor(finished.soups, finished.trials);
+          const orders = studyConfig.rules?.order_size != null
+            ? { completed: finished.trials.filter((t) => t.completed).length, total: finished.trials.length }
+            : null;
           if (rooms.markCompleted(pid)) {
             participantsLog.write("study_completed", {
               participantId: pid, room: finished.roomId, rounds: finished.rounds, soups: finished.soups, bonus,
+              ...(orders ? { orders, trials: finished.trials } : {}),
             });
           }
           send(ws, {
@@ -345,6 +357,7 @@ wss.on("connection", (ws) => {
             completionUrl: studyConfig.completionUrl,
             soups: finished.soups,
             bonus,
+            orders,
             ...(studyConfig.completionUrl ? {} : { reason: "No completion link is configured for this study." }),
           });
           return;

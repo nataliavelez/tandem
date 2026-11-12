@@ -75,6 +75,15 @@ export interface GameTrialConfig extends BaseTrialConfig {
   horizon?: number; 
   tickMs?: number;  
   condition?: string;
+  /** Heading (default "Round <round>"), e.g. "Round 2 of 4" */
+  label?: string;
+  /**
+   * Seconds of "get ready" countdown before this round (e.g. between rounds),
+   * with breakText. Counts down by itself: the group starts once everyone is
+   * ready, so a Continue button would let one idle player hold up the rest.
+   */
+  breakSeconds?: number;
+  breakText?: string;
 }
 
 /**
@@ -128,9 +137,9 @@ export interface CompletionTrialConfig extends BaseTrialConfig {
   title?: string;
   text?: string;
   /**
-   * Shown when the server reports a bonus (BONUS_PER_SOUP is set). {bonus} is
-   * replaced by the amount with 2 decimals (e.g. 1.30), {soups} by "1 soup" /
-   * "13 soups" (the team's total over all rounds).
+   * Shown when the server reports a bonus. {bonus} is replaced by the amount
+   * with 2 decimals (e.g. 1.30), {soups} by "1 soup" / "13 soups" (the team's
+   * total over all rounds), {orders} by "3 of 4 orders" (with ORDER_SIZE).
    */
   bonusText?: string;
 }
