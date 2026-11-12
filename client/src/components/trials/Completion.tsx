@@ -1,6 +1,7 @@
 {/*
-Final screen for participants who finished: thanks them and sends them to the
-completion URL (e.g. Prolific). 
+Final screen for participants who finished: thanks them, shows their bonus
+(from the server, if the study has one) and sends them to the completion URL
+(e.g. Prolific).
 
 Created by: Elizabeth Mieczkowski, Updated: 10/2026
 */}
@@ -15,10 +16,20 @@ import { logEvent } from "../engine/DataLogger";
 
 type Props = { config: CompletionTrialConfig };
 
+/** config.bonusText with {bonus} and {soups} filled in, or null if there's no bonus */
+function bonusMessage(config: CompletionTrialConfig, result: CompletionResult | null): string | null {
+  if (!config.bonusText || result?.bonus == null) return null;
+  const soups = result.soups ?? 0;
+  return config.bonusText
+    .split("{bonus}").join(result.bonus.toFixed(2))
+    .split("{soups}").join(`${soups} soup${soups === 1 ? "" : "s"}`);
+}
+
 export function Completion({ config }: Props) {
   const { socket, addMessageListener, removeMessageListener } = useSocket();
   const [result, setResult] = useState<CompletionResult | null>(loadCompletion);
   const url = result?.completionUrl ?? null;
+  const bonus = bonusMessage(config, result);
   const [secondsLeft, setSecondsLeft] = useState(Math.ceil(studyConfig.autoRedirectMs / 1000));
 
   useEffect(() => {
@@ -45,7 +56,7 @@ export function Completion({ config }: Props) {
   useEffect(() => {
     if (!result || logged.current) return;
     logged.current = true;
-    logEvent("completion_shown", { screenId: config.id, hasUrl: !!result.completionUrl, reason: result.reason ?? null });
+    logEvent("completion_shown", { screenId: config.id, hasUrl: !!result.completionUrl, reason: result.reason ?? null, bonus: result.bonus ?? null });
   }, [result, config.id]);
 
   useEffect(() => {
@@ -64,12 +75,13 @@ export function Completion({ config }: Props) {
 
   return (
     <div style={{ padding: "2rem", maxWidth: 640, textAlign: "left" }}>
-      <h2>Thank you!</h2>
-      <p>{config.text ?? "You have finished the study. Thank you for taking part!"}</p>
+      <h2>{config.title ?? "Thank you!"}</h2>
+      {config.text && <p>{config.text}</p>}
+      {bonus && <p>{bonus}</p>}
       {url ? (
         <>
-          <p>You will be returned to Prolific automatically in {secondsLeft} s to complete your submission.</p>
-          <button onClick={() => { window.location.href = url; }}>Complete study now</button>
+          <p>You will now return to Prolific to complete your submission (automatically in {secondsLeft} s).</p>
+          <button onClick={() => { window.location.href = url; }}>Return to Prolific now</button>
         </>
       ) : result ? (
         <p>

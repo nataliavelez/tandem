@@ -14,7 +14,7 @@ import { SidecarError } from "./game/sidecarClient";
 import { DataLog } from "./game/dataLog";
 import { backup } from "./backup";
 import {
-  studyConfig, studyInfo, endInfo, unseatedEndInfo, checkStudyConfig,
+  studyConfig, studyInfo, endInfo, unseatedEndInfo, checkStudyConfig, bonusFor,
   live, fileSettings, minGroupSizeFor, validateSettings, setLiveSettings, type LiveSettings,
 } from "./studyConfig";
 import { createAdmin, type ParticipantInfo } from "./admin";
@@ -334,12 +334,17 @@ wss.on("connection", (ws) => {
             send(ws, { type: "COMPLETION", completionUrl: null, reason: "We have no record of you finishing the game." });
             return;
           }
+          const bonus = bonusFor(finished.soups);
           if (rooms.markCompleted(pid)) {
-            participantsLog.write("study_completed", { participantId: pid, room: finished.roomId, rounds: finished.rounds });
+            participantsLog.write("study_completed", {
+              participantId: pid, room: finished.roomId, rounds: finished.rounds, soups: finished.soups, bonus,
+            });
           }
           send(ws, {
             type: "COMPLETION",
             completionUrl: studyConfig.completionUrl,
+            soups: finished.soups,
+            bonus,
             ...(studyConfig.completionUrl ? {} : { reason: "No completion link is configured for this study." }),
           });
           return;

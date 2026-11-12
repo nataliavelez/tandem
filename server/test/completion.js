@@ -18,7 +18,7 @@ Created by: Elizabeth Mieczkowski, Updated: 10/2026
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { spawn } = require("child_process");
+const { spawn, execFileSync } = require("child_process");
 const WebSocket = require("ws");
 
 const PORT = 8097;
@@ -43,6 +43,7 @@ function startServer() {
     GAME: "overcooked", REQUIRED_PLAYERS: "3", MIN_GROUP_SIZE: "3", ROUNDS: "2",
     HORIZON: "20", TICK_MS: "100", TRIAL_GRACE_MS: "3000",
     COMPLETION_URL: DONE_URL, ADMIN_TOKEN: TOKEN,
+    BONUS_PER_SOUP: "0.10", BONUS_MAX: "2",
   };
   const proc = spawn("node", ["-r", "ts-node/register/transpile-only", "src/index.ts"], { cwd: path.resolve(__dirname, ".."), env });
   const srv = { proc, out: "", exited: false };
@@ -117,7 +118,10 @@ const adminState = async () => (await fetch(`http://127.0.0.1:${PORT}/admin/stat
   check(c0.starts === 2, "no round after the last one (ROUNDS=2)");
 
   // 5. Completion URL for finishers, logged once
-  check((await complete(c0)).completionUrl === DONE_URL, "finished → COMPLETION_URL");
+  const done0 = await complete(c0);
+  check(done0.completionUrl === DONE_URL, "finished → COMPLETION_URL");
+  // The bots never cook, so their team served 0 soups
+  check(done0.soups === 0 && done0.bonus === 0, `finished → team soups and bonus sent (${done0.soups} soups, bonus ${done0.bonus})`);
   check((await complete(c0)).completionUrl === DONE_URL, "asking again → same URL");
 
   // 6. A finisher leaves: not dropped, and the rest of the group is not aborted
@@ -171,7 +175,20 @@ const adminState = async () => (await fetch(`http://127.0.0.1:${PORT}/admin/stat
   const completed = people.filter((e) => e.event === "study_completed");
   check(completed.length === 3 && completed.filter((e) => e.participantId === "fin_p0").length === 1,
     "participants log: study_completed once per finisher (3)");
+  check(completed.every((e) => e.soups === 0 && e.bonus === 0 && e.room === "room_1"), "participants log: study_completed has room, soups and bonus");
+  check(people.find((e) => e.event === "server_started")?.study?.bonus?.perSoup === 0.1, "participants log: bonus settings in the study info");
   check(people.filter((e) => e.event === "completion_refused").length === 2, "participants log: 2 refused requests (outsider, before finishing)");
+
+  // 11. Bonus arithmetic (bonusFor), with and without a cap / bonus
+  const bonuses = (env) => JSON.parse(execFileSync("node", ["-r", "ts-node/register/transpile-only", "-e",
+    'const { bonusFor } = require("./src/studyConfig"); console.log(JSON.stringify([0, 1, 3, 7, 13, 20, 21, 40, null].map(bonusFor)))'],
+    { cwd: path.resolve(__dirname, ".."), env: { ...process.env, STUDY_CONFIG: "", ...env } }).toString().trim().split("\n").at(-1));
+  const capped = bonuses({ BONUS_PER_SOUP: "0.10", BONUS_MAX: "2" });
+  check(JSON.stringify(capped) === "[0,0.1,0.3,0.7,1.3,2,2,2,null]", `bonus 0.10/soup capped at 2: ${JSON.stringify(capped)}`);
+  const uncapped = bonuses({ BONUS_PER_SOUP: "0.15", BONUS_MAX: "" });
+  check(JSON.stringify(uncapped) === "[0,0.15,0.45,1.05,1.95,3,3.15,6,null]", `bonus 0.15/soup, no cap (rounded to cents): ${JSON.stringify(uncapped)}`);
+  const none = bonuses({ BONUS_PER_SOUP: "", BONUS_MAX: "2" });
+  check(none.every((b) => b === null), "no BONUS_PER_SOUP → no bonus");
 
   for (const c of [c1, c0b, c2b, outsider]) c.ws.close();
   fs.rmSync(DATA_DIR, { recursive: true, force: true });

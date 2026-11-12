@@ -160,7 +160,8 @@ export type CoreServerEvent =
   | { type: "LOG_ACK"; id: string }
   | { type: "PRACTICE_STATUS"; attempts: number; passed: boolean; lastSoups: number | null; required: number; deadline: number | null; skipped?: boolean }
   | { type: "LOBBY_DEADLINE"; deadline: number | null; paid: boolean }
-  | { type: "COMPLETION"; completionUrl: string | null; reason?: string }
+  /** soups: the team's total over all rounds; bonus: BONUS_PER_SOUP x soups, capped (null = no bonus) */
+  | { type: "COMPLETION"; completionUrl: string | null; reason?: string; soups?: number | null; bonus?: number | null }
   | { type: "SESSION_STATUS"; status: "new"; practicePassed?: boolean }
   | { type: "SESSION_STATUS"; status: "finished"; roundsCompleted: number }
   | { type: "SESSION_STATUS"; status: "resumed"; roomId: RoomID; agentId: AgentID; running: boolean; trialsCompleted: number; kind?: "practice" | "group" }

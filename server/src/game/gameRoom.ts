@@ -122,6 +122,8 @@ export class GameRoom {
   private pressQueues = new Map<AgentID, number[]>();
   /** Team score this trial (Overcooked: sum of the shared delivery rewards) */
   private score = 0;
+  /** Overcooked: soups the team served over all finished trials (null for MPE) */
+  private soupsTotal: number | null = null;
   readonly createdAt = Date.now();
   /** For the admin view: the current trial's start, latest step, and step timing */
   private trialStartedAt: number | null = null;
@@ -174,6 +176,8 @@ export class GameRoom {
   /** True once every round has been played. */
   get isDone() { return this.done; }
   get trialsCompleted() { return this.trialCount - (this.running ? 1 : 0); }
+  /** Overcooked: soups served over all finished trials (null for MPE); the finishers' bonus is based on it */
+  get totalSoups() { return this.soupsTotal; }
   playerIds(): PlayerID[] { return [...this.seats.keys()]; }
   /** Can a new player be placed here? */
   get isOpen() { return !this.locked && !this.disposed && this.seats.size < this.capacity; }
@@ -560,6 +564,7 @@ export class GameRoom {
     this.clearActions();
     const reward = this.spec?.game === "overcooked" ? this.spec.delivery_reward : null;
     const soups = reward ? Math.round(this.score / reward) : null;
+    if (soups !== null) this.soupsTotal = (this.soupsTotal ?? 0) + soups;
     this.log.write("trial_end", { trial: this.trialCount, episodeId, reason, score: this.score, soups, players: this.seatSummary() });
 
     this.broadcast({ type: "TRIAL_END", trialId: episodeId });

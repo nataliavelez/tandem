@@ -1189,3 +1189,76 @@ KNOWN ISSUES (open, additions)
 
 [test] Clean copy of the working tree with no repo-root node_modules:
       npm ci + npm run build in client/ succeeds (as deploy/lib.sh does).
+
+================================================================================
+2026-11-12 — Consent: UCSD exempt information sheet
+================================================================================
+
+[feature] The consent screen shows the lab's exempt information sheet
+      (velez_multiplayer_infosheet.doc) instead of the placeholder. The
+      template's variable fields are filled in for this study: Prolific
+      community; approximately 20 minutes; navigate a virtual avatar through a
+      video game environment, and form a team with other participants and
+      play a game together; $6 plus a bonus of up to $2 based on score.
+      Participants can agree (continue), decline (logged; the study stops on a
+      "return the study on Prolific" message, with a way back to the sheet),
+      or print / save a copy (the printout leaves out the buttons). Email
+      addresses are links. The text lives in the timeline config, so it can be
+      edited without touching the component.
+      Files: client/types.ts (ConsentTrialConfig: title, text, agreeLabel,
+      declineLabel, declineText), client/src/components/trials/Consent.tsx,
+      client/src/components/trials/Consent.css (new),
+      client/src/scripts/expTimeline.ts
+
+[test] Browser check (headless Chrome; dark and light at 1100 px, dark at
+      375 px), 26 checks: title, 7 paragraphs, no template placeholders left,
+      filled-in values, both emails linked, no horizontal scroll, buttons
+      hidden when printing, decline message, refresh returns to the sheet,
+      agree continues to the instructions, consent events logged as
+      [false, false, true], no page errors. tsc, eslint and vite build clean.
+
+KNOWN ISSUES (open, additions)
+- The bonus (up to $2, based on score) is not paid by the platform: compute
+  it from the room logs' trial_end score and pay it through Prolific.
+- The sheet says approximately 20 minutes; with a 10-minute lobby timeout and
+  a 10-minute practice limit, the worst case is about 35 minutes.
+
+================================================================================
+2026-11-12 (cont.) — End-of-study message and score bonus
+================================================================================
+
+[feature] Score bonus (Overcooked). New settings BONUS_PER_SOUP and BONUS_MAX:
+      a finisher's bonus is BONUS_PER_SOUP x the soups their team served over
+      all rounds, capped at BONUS_MAX, rounded to cents (empty BONUS_PER_SOUP
+      = no bonus). Each group room adds up its soups; the server sends soups
+      and bonus with COMPLETION and logs them with study_completed (once per
+      finisher); the bonus settings are in the study info of every log. The
+      platform doesn't pay it: use the study_completed lines for a Prolific
+      bulk bonus. Startup prints the bonus rule.
+      Files: server/src/studyConfig.ts (bonusFor), server/src/game/gameRoom.ts
+      (totalSoups), server/src/game/roomManager.ts, server/src/index.ts,
+      shared/types.ts, server/studies/example.env
+
+[feature] End-of-study screen: "Thank you for participating in our study!",
+      the bonus ("Your team served 13 soups, so your bonus will be $1.30. It
+      will be paid through Prolific.") and "You will now return to Prolific"
+      with the countdown and a "Return to Prolific now" button. The title and
+      bonus sentence are set in the timeline ({soups}, {bonus} placeholders);
+      the bonus line is left out when the study has no bonus. The old
+      game-jam debriefing screen is removed. completion_shown logs the bonus.
+      Files: client/types.ts (CompletionTrialConfig: title, bonusText),
+      client/src/components/trials/Completion.tsx,
+      client/src/context/completion.ts, client/src/scripts/expTimeline.ts
+
+[test] server/test/completion.js (+5 checks, 31 in all): finishers get soups
+      and bonus (0 and 0: the bots never cook); study_completed has room,
+      soups and bonus; bonus settings in the study info; bonusFor for 0-40
+      soups at 0.10 capped at 2, 0.15 uncapped (rounded to cents), and no
+      bonus without BONUS_PER_SOUP. test:all: all 10 suites pass. Browser
+      check of the final screen (13 soups → $1.30; 1 soup → "1 soup",
+      $0.10; old debrief gone). tsc, eslint clean.
+
+KNOWN ISSUES (open, additions)
+- A non-zero bonus from a real game has only been checked through the
+  arithmetic test and the screen check: the test bots don't cook. Check one on
+  the droplet's first full run.

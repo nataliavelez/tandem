@@ -26,8 +26,18 @@ export interface DisplayTrialConfig extends BaseTrialConfig {
   _delayElapsed?: number;
 }
 
+/**
+ * Consent / information sheet. Blank lines in text start new paragraphs; email
+ * addresses become links. Agreeing logs consent { agreed: true } and continues;
+ * declining logs { agreed: false } and shows declineText (the study stops there).
+ */
 export interface ConsentTrialConfig extends BaseTrialConfig {
   type: "consent";
+  title: string;
+  text: string;
+  agreeLabel?: string;
+  declineLabel?: string;
+  declineText?: string;
 }
 
 export interface InstructionTrialConfig extends BaseTrialConfig {
@@ -115,7 +125,14 @@ export interface PracticeTrialConfig extends BaseTrialConfig {
 /** Last screen for participants who finished: thanks + redirect to the completion URL (from the server). */
 export interface CompletionTrialConfig extends BaseTrialConfig {
   type: "completion";
+  title?: string;
   text?: string;
+  /**
+   * Shown when the server reports a bonus (BONUS_PER_SOUP is set). {bonus} is
+   * replaced by the amount with 2 decimals (e.g. 1.30), {soups} by "1 soup" /
+   * "13 soups" (the team's total over all rounds).
+   */
+  bonusText?: string;
 }
 
 export type TrialConfig =

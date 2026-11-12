@@ -19,6 +19,11 @@ Payment rules:
 
 Finishing: a participant who played every round gets COMPLETION_URL
 
+Bonus (Overcooked): finishers get BONUS_PER_SOUP x the soups their team served
+over all rounds, capped at BONUS_MAX, rounded to cents. Shown on the final
+screen and logged with study_completed; the platform doesn't pay it (Prolific
+bulk bonus). BONUS_PER_SOUP unset = no bonus.
+
 Created by: Elizabeth Mieczkowski, Updated: 10/2026
 */}
 import { execFileSync } from "child_process";
@@ -33,6 +38,28 @@ function envBool(name: string, fallback: boolean): boolean {
 
 function envUrl(name: string): string | null {
   return process.env[name]?.trim() || null;
+}
+
+/** A non-negative amount of money, or null if unset (exits on a bad value) */
+function envMoney(name: string): number | null {
+  const v = process.env[name]?.trim();
+  if (!v) return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) {
+    console.error(`[config] ${name} must be a non-negative number, e.g. 0.10 (got "${v}")`);
+    process.exit(1);
+  }
+  return n;
+}
+
+const bonusPerSoup = envMoney("BONUS_PER_SOUP");
+const bonusMax = envMoney("BONUS_MAX");
+
+/** A finisher's bonus for the soups their team served, or null if there is no bonus. */
+export function bonusFor(soups: number | null): number | null {
+  if (bonusPerSoup === null || soups === null) return null;
+  const amount = bonusMax === null ? bonusPerSoup * soups : Math.min(bonusPerSoup * soups, bonusMax);
+  return Math.round(amount * 100) / 100;
 }
 
 const GAMES: GameName[] = ["mpe", "overcooked"];
@@ -184,6 +211,7 @@ export const studyConfig = {
   rounds,
   practice,
   completionUrl: envUrl("COMPLETION_URL"),
+  bonus: { perSoup: bonusPerSoup, max: bonusMax },
   payment: {
     aborted: { paid: envBool("PAY_ABORTED", true), completionUrl: envUrl("ABORTED_COMPLETION_URL") },
     no_group: { paid: envBool("PAY_NO_GROUP", true), completionUrl: envUrl("NO_GROUP_COMPLETION_URL") },
@@ -193,9 +221,9 @@ export const studyConfig = {
 };
 
 export function studyInfo() {
-  const { studyName, condition, configFile, code, game, layout, seed, seedPerRoom, rounds, payment } = studyConfig;
+  const { studyName, condition, configFile, code, game, layout, seed, seedPerRoom, rounds, payment, bonus } = studyConfig;
   return {
-    studyName, condition, configFile, code, game, layout, seed, seedPerRoom, rounds,
+    studyName, condition, configFile, code, game, layout, seed, seedPerRoom, rounds, bonus,
     playersPerRoom: live.groupSize,
     minGroupSize: minGroupSizeFor(live.groupSize),
     minStartSize: live.minStartSize,
@@ -237,6 +265,11 @@ export function checkStudyConfig() {
     `${timeout}; ${live.maxRooms === null ? "unlimited rooms" : `at most ${live.maxRooms} room(s)`}; ` +
     `pay aborted=${payment.aborted.paid}, no_group=${payment.no_group.paid}, practice_timeout=${payment.practice_timeout.paid}, dropped=${payment.dropped.paid}`);
   if (live.minStartSize !== null) console.log(`[config] at the lobby timeout, groups of at least ${live.minStartSize} start short`);
+  if (bonusPerSoup !== null) {
+    console.log(`[config] bonus: ${bonusPerSoup} per soup the team serves${bonusMax === null ? " (no cap)" : `, at most ${bonusMax}`}`);
+  } else if (bonusMax !== null) {
+    console.warn("[config] BONUS_MAX is set but BONUS_PER_SOUP isn't: no bonus will be shown or logged.");
+  }
   if (practice.enabled) {
     console.log(`[config] solo practice: ${practice.layout}, ${practice.horizon} steps per attempt, ` +
       `pass = ${practice.minSoups} soup(s) in one attempt, time limit ${practice.timeLimitMs ? `${Math.round(practice.timeLimitMs / 1000)}s` : "none"}`);

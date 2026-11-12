@@ -3,8 +3,28 @@ import type { TrialTimeline } from "../../types";
 // Screens in order
 const expTimeline : TrialTimeline = [
     {
-        "id": "intro-consent",
-        "type": "consent"
+        // UCSD exempt information sheet (velez_multiplayer_infosheet.doc), with the
+        // template's variable fields filled in for this study. Keep it in sync
+        // with the IRB-approved version.
+        id: "intro-consent",
+        type: "consent",
+        title: "Exempt Information Sheet",
+        text: `You are being invited to participate in a research study titled Computational approaches to emergent intelligence. This study is being done by Prof. Natalia Vélez from UC San Diego. You were selected to participate in this study as a member of the Prolific community.
+
+The purpose of this research study is to understand how people collaborate. Your participation in this research should last approximately 20 minutes. If you agree to take part in this study, you will be asked to navigate a virtual avatar through a video game environment, and to form a team with other participants and play a game together.
+
+You will receive $6 for your participation and a bonus of up to $2 based on your score.
+
+As you play, the study software records data about what you do in the game—for example, the actions you take, your timing, and any messages you send to other participants. To protect your privacy, we remove identifying information (such as your participant ID) and replace it with a random code before we analyze or share your data. De-identified data may be posted in public online research repositories so that other researchers can reuse it.
+
+Your participation in this study is completely voluntary, and you can withdraw at any time. Choosing not to participate or withdrawing will result in no penalty or loss of benefits to which you are entitled. You are free to skip any question that you choose.
+
+If you have questions about this project or if you have a research-related problem, you may contact the researcher, Natalia Vélez, at velezlab-participants@ucsd.edu or (858) 822-2951. If you have any questions concerning your rights as a research subject, you may contact the UC San Diego Office of IRB Administration at irb@ucsd.edu or 858-246-4777.
+
+By participating in this research you are indicating that you are at least 18 years old, have read this consent form, and agree to participate in this research study. Please keep this consent form for your records.`,
+        agreeLabel: "I agree to participate",
+        declineLabel: "I do not wish to participate",
+        declineText: "You have chosen not to participate. Please close this page and return the study on Prolific. There is no penalty for doing so.",
     },
     {
         id: "overcooked-instructions",
@@ -167,13 +187,11 @@ Your own cook is marked YOU. The others are your teammates, numbered 1 and up. C
         ],
     },
     {
-        "id": "debriefing",
-        "type": "display",
-        "text": "That's all for now! Thanks so much to all of you for your hard work in making this game jam a success. (And especially to Renée for all her work organizing!) I'll keep building out this project, so watch this space!",
-    },
-    {
+        // Thanks, the bonus (server: BONUS_PER_SOUP / BONUS_MAX) and the return to Prolific
         id: "completion",
         type: "completion",
+        title: "Thank you for participating in our study!",
+        bonusText: "Your team served {soups}, so your bonus will be ${bonus}. It will be paid through Prolific.",
     }
 ];
 

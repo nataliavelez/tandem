@@ -1,0 +1,18 @@
+/* Consent / information sheet (Consent.tsx) */
+.consent { padding: 2rem; max-width: 720px; text-align: left; line-height: 1.55; }
+.consent a { word-break: break-word; }
+.consent-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
+.consent-agree { font-weight: 600; }
+.consent-print { margin-left: auto; }
+
+@media (max-width: 600px) {
+  .consent { padding: 1rem; }
+  .consent-print { margin-left: 0; }
+}
+
+/* A printed / saved copy is just the sheet: no buttons, black on white */
+@media print {
+  .consent-actions { display: none; }
+  .consent { padding: 0; max-width: none; color: #000; }
+  .consent a { color: #000; }
+}

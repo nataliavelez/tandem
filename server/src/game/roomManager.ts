@@ -54,7 +54,7 @@ export class RoomManager {
   /** Participants who can't continue, and why */
   private ended = new Map<PlayerID, EndInfo>();
   /** Participants who played every round */
-  private finished = new Map<PlayerID, { roomId: RoomID; rounds: number; at: number; completedAt: number | null }>();
+  private finished = new Map<PlayerID, { roomId: RoomID; rounds: number; soups: number | null; at: number; completedAt: number | null }>();
   private nextRoomNum = 1;
   /** When each participant waiting in a lobby got their seat */
   private lobbyJoinedAt = new Map<PlayerID, number>();
@@ -364,7 +364,7 @@ export class RoomManager {
   private finishRoom(room: GameRoom) {
     const now = Date.now();
     for (const pid of room.playerIds()) {
-      this.finished.set(pid, { roomId: room.id, rounds: room.trialsCompleted, at: now, completedAt: null });
+      this.finished.set(pid, { roomId: room.id, rounds: room.trialsCompleted, soups: room.totalSoups, at: now, completedAt: null });
     }
     for (const pid of room.playerIds()) {
       if (this.graceTimers.has(pid)) this.leave(pid, "finished");
