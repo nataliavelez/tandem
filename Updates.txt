@@ -1360,3 +1360,20 @@ KNOWN ISSUES (open, additions)
 - One env step = one 100 ms tick, so cook times of 5 / 60 steps are 0.5 / 6 s
   for people, while their moves are limited by key presses (at most one per
   tick).
+
+[bug] Deploy to the fork, first run on the droplet: (1) update.sh loads
+      deploy/lib.sh before checking out the new code, so it ran the old
+      helpers (without the "point JaxMARL at the new repo" step) and the
+      checkout of the fork's commit failed. update.sh now reloads lib.sh after
+      the checkout. (2) The fork declares Python >= 3.11 and uv refused to
+      install it into the sidecar's Python 3.10, with no option to skip the
+      check. lib.sh now installs it with pip (pinned 25.3)
+      --ignore-requires-python. The fork runs on 3.10: all 25 sidecar tests
+      pass on Python 3.10.19, and on the droplet it builds the sweep kitchen
+      (jaxmarl 0.2.0, commit 3813f07 in the spec's versions).
+      Files: deploy/update.sh, deploy/lib.sh
+
+KNOWN ISSUES (open, additions)
+- The sidecar runs the fork on Python 3.10 although the fork declares 3.11+.
+  Moving the sidecar to 3.11 (PYTHON_VERSION, a new venv, re-checking the
+  pinned packages) would remove the workaround.

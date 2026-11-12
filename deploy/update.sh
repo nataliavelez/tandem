@@ -34,6 +34,9 @@ elif [ "$n" -lt 0 ]; then
 fi
 
 checkout_ref "$REF"
+# Reload the helpers from the code just checked out (this run started with the old ones)
+# shellcheck source=deploy/lib.sh
+. "$APP/deploy/lib.sh"
 build_app "$DOMAIN"
 sed -i "s/^GIT_REF=.*/GIT_REF=$REF/" "$ETC/deploy.env"
 

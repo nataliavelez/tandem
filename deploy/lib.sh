@@ -52,7 +52,10 @@ build_app() {
   as_app git -C "$APP/jaxmarl" remote set-url origin "$JAXMARL_REPO"
   as_app git -C "$APP/jaxmarl" fetch origin
   as_app git -C "$APP/jaxmarl" checkout --detach "$JAXMARL_COMMIT"
-  as_app uv pip install --python "$VENV/bin/python" --no-deps -e "$APP/jaxmarl"
+  # The lab fork declares Python >= 3.11, but the sidecar's 3.10 runs it (its tests
+  # pass there), and uv has no way to skip that check: install it with pip instead
+  as_app uv pip install --python "$VENV/bin/python" "pip==25.3"
+  as_app "$VENV/bin/python" -m pip install --quiet --no-deps --ignore-requires-python -e "$APP/jaxmarl"
 
   log "Server dependencies"
   as_app bash -c "cd '$APP/server' && npm ci --no-audit --no-fund"
