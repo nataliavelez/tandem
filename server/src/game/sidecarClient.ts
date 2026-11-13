@@ -29,7 +29,7 @@ export async function envCreate(params:
   | { task: "simple_spread"; seed: number; num_agents: number; num_landmarks: number;
       local_ratio?: number; episode_horizon?: number; action_type?: "DISCRETE_ACT" }
   | { task: "overcooked"; seed: number; num_agents: number; episode_horizon?: number; layout: string;
-      num_pots?: number; pot_cook_time?: number; pot_placement?: "nearest" | "spread";
+      num_pots?: number; pot_cook_time?: number; pot_placement?: "balanced" | "spread";
       recipe_size?: number; order_size?: number | null; no_collision?: boolean }
 ) { return post("/env/create", params, CREATE_TIMEOUT_MS); }
 

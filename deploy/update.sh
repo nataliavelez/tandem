@@ -41,6 +41,7 @@ build_app "$DOMAIN"
 sed -i "s/^GIT_REF=.*/GIT_REF=$REF/" "$ETC/deploy.env"
 
 log "Restarting services"
+install_system_config
 install -m 644 "$APP/deploy/tandem-sidecar.service" "$APP/deploy/tandem-server.service" /etc/systemd/system/
 systemctl daemon-reload
 since=$(date '+%Y-%m-%d %H:%M:%S')

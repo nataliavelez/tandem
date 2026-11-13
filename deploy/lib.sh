@@ -72,6 +72,15 @@ build_app() {
   fi
 }
 
+# System settings the deployment needs (safe to re-run): keep automatic security
+# updates from restarting the game services mid-session (needrestart).
+install_system_config() {
+  if [ -d /etc/needrestart ]; then
+    mkdir -p /etc/needrestart/conf.d
+    install -m 644 "$APP/deploy/needrestart-tandem.conf" /etc/needrestart/conf.d/tandem.conf
+  fi
+}
+
 # Wait until the sidecar answers and the game server has warmed it up.
 wait_healthy() {
   local since="$1"

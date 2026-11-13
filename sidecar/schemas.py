@@ -21,7 +21,9 @@ class CreateReq(BaseModel):
     layout: str = "open_room"
     # overcooked only, the scaling-sweep options (None = the layout's / engine's default)
     num_pots: Optional[int] = Field(None, ge=1, le=30)
-    pot_placement: Literal["spread", "nearest"] = "nearest"  # only used with num_pots
+    # only used with num_pots: "spread" adds pots farthest apart; "balanced" keeps the most
+    # centred of the layout's pot slots (scaling_stations), as in the sweep
+    pot_placement: Literal["spread", "balanced"] = "spread"
     pot_cook_time: Optional[int] = Field(None, ge=1, le=10_000)
     recipe_size: int = Field(3, ge=1, le=3)                  # onions per soup
     order_size: Optional[int] = Field(None, ge=1, le=1000)   # episode ends after this many soups

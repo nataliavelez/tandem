@@ -25,7 +25,7 @@ number. CONDITION_ORDER=rotate (default) starts group k at entry k (a Latin
 square over groups), fixed gives every group the listed order. Rules shared by
 every round: ORDER_SIZE (the round ends once the team serves that many soups;
 empty = play to HORIZON), RECIPE_SIZE (onions per soup, default 3),
-POT_PLACEMENT (nearest | spread, as in the sweep) and NO_COLLISION.
+POT_PLACEMENT (balanced | spread, as in the sweep) and NO_COLLISION.
 
 Bonus (Overcooked): finishers get BONUS_PER_SOUP x the soups their team served
 over all rounds, plus BONUS_SPEED_PER_ROUND x (1 - steps used / step limit) for
@@ -123,7 +123,7 @@ function parseCondition(raw: string, setting: string): RoundCondition {
 }
 
 /** The scaling sweep's rules, shared by every round (Overcooked); sent to the sidecar */
-export type OvercookedRules = { order_size: number | null; recipe_size: number; pot_placement: "nearest" | "spread"; no_collision: boolean };
+export type OvercookedRules = { order_size: number | null; recipe_size: number; pot_placement: "balanced" | "spread"; no_collision: boolean };
 
 const intOr = (v: string | undefined, fallback: number) => {
   const n = Math.floor(Number(v));
@@ -244,8 +244,9 @@ const rules: OvercookedRules | null = game === "overcooked" ? (() => {
   if (order !== null && order < 1) configError("ORDER_SIZE must be at least 1 (or empty: play every round to HORIZON)");
   const recipe = intOr(process.env.RECIPE_SIZE, 3);
   if (recipe < 1 || recipe > 3) configError("RECIPE_SIZE must be 1, 2 or 3 (onions per soup)");
-  const placement = process.env.POT_PLACEMENT?.trim() || "nearest";
-  if (placement !== "nearest" && placement !== "spread") configError(`POT_PLACEMENT must be nearest or spread (got "${placement}")`);
+  // balanced: keep the most centred of the layout's pot slots (scaling_stations); spread: add pots farthest apart
+  const placement = process.env.POT_PLACEMENT?.trim() || "spread";
+  if (placement !== "balanced" && placement !== "spread") configError(`POT_PLACEMENT must be balanced or spread (got "${placement}")`);
   return { order_size: order, recipe_size: recipe, pot_placement: placement, no_collision: envBool("NO_COLLISION", false) };
 })() : null;
 

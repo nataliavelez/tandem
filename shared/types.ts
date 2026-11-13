@@ -114,7 +114,7 @@ export type OvercookedTrialSpec = BaseTrialSpec & {
   recipe_size?: number;             // onions per soup
   order_size?: number | null;       // the round ends once this many soups are served (null = runs to max_steps)
   num_pots?: number;
-  pot_placement?: "nearest" | "spread" | null;
+  pot_placement?: "balanced" | "spread" | null;
   no_collision?: boolean;
 };
 

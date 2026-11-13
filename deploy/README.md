@@ -197,7 +197,11 @@ The logs contain Prolific IDs; handle them as personal data.
 - Study files (completion codes, admin token) are readable only by the `tandem`
   user. `/etc/tandem/tandem.env` (keys) is readable by root and `tandem`.
 - Caddy keeps no access log, because the URLs contain Prolific IDs.
-- Ubuntu installs security updates automatically. For other updates, run
+- Ubuntu installs security updates automatically, but it never restarts the
+  game services for them (`/etc/needrestart/conf.d/tandem.conf`): a restart
+  would end every session in progress. Updated libraries take effect at the
+  next deliberate restart (`update.sh`, or `sudo systemctl restart
+  tandem-sidecar tandem-server` between sessions). For other updates, run
   `sudo apt update && sudo apt upgrade` between sessions, not during them.
 
 ## Status

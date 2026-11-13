@@ -43,7 +43,7 @@ The faster your team completes each order, the bigger your bonus: up to $0.50 pe
 
 Between rounds, the kitchen changes: it may have a different number of pots, and soups may take a different amount of time to cook.
 
-First, you'll practice on your own in the same kitchen. Once you've served a soup there, we'll match you with your team.`,
+First, you'll practice making a soup on your own in a small practice kitchen. The kitchen you'll play in with your team is different. Once you've served a soup in practice, we'll match you with your team.`,
             },
             {
                 text: `How to make an onion soup:
@@ -69,11 +69,12 @@ Your own cook is marked YOU. The others are your teammates, numbered 1 and up. C
         ],
     },
     {
-        // Solo practice in the study kitchen with one pot (server: PRACTICE_LAYOUT,
-        // PRACTICE_CONDITION); must serve a soup before the lobby.
+        // Solo practice in a small kitchen the rounds don't use (server:
+        // PRACTICE_LAYOUT=cramped_room), with the study's recipe; must serve a soup
+        // before the lobby. The study kitchen is seen first in round 1.
         id: "practice",
         type: "practice",
-        intro: "Before you join your team, practice on your own in the kitchen you'll play in, with one pot. Serve a soup to continue. You can try as many times as you need.",
+        intro: "Before you join your team, practice making a soup on your own in this small practice kitchen. The kitchen you'll play in with your team looks different, but soups are made the same way. Serve a soup to continue. You can try as many times as you need.",
     },
     {
         id: "waiting-room",

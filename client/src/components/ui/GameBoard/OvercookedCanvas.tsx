@@ -8,7 +8,7 @@ Also exports OvercookedLegend: the same shapes, labeled, for the side panel.
 Created by: Elizabeth Mieczkowski, Updated: 10/2026
 */}
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AgentID, OvercookedRunningState, OvercookedTrialSpec } from "shared/types";
 import { drawAgent, drawItem, drawPotContents, drawTile, agentColor, agentIndex } from "./overcookedDraw";
 
@@ -16,6 +16,22 @@ import { drawAgent, drawItem, drawPotContents, drawTile, agentColor, agentIndex 
 function tileSize(spec: OvercookedTrialSpec, maxWidth = 720, maxHeight = 480) {
   const s = Math.floor(Math.min(maxWidth / spec.layout.width, maxHeight / spec.layout.height));
   return Math.max(24, Math.min(72, s));
+}
+
+/**
+ * Width the kitchen may use: the page (at most 1280 px, the app's width) minus
+ * the side panel, gaps and padding (~410 px), so wide kitchens such as the
+ * 23-cell scaling_stations get bigger tiles. Follows window resizes.
+ */
+function useBoardWidth() {
+  const calc = () => Math.max(480, Math.min(1100, Math.min(window.innerWidth, 1280) - 410));
+  const [w, setW] = useState(calc);
+  useEffect(() => {
+    const onResize = () => setW(calc());
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return w;
 }
 
 /** A canvas sized in CSS pixels, drawn at the screen's pixel density. */
@@ -44,7 +60,7 @@ type Props = {
 };
 
 export function OvercookedCanvas({ spec, state, myAgentId }: Props) {
-  const s = tileSize(spec);
+  const s = tileSize(spec, useBoardWidth());
   const { width, height, rows } = spec.layout;
 
   const ref = useHiDpiCanvas(width * s, height * s, (ctx) => {

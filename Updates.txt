@@ -1377,3 +1377,75 @@ KNOWN ISSUES (open, additions)
 - The sidecar runs the fork on Python 3.10 although the fork declares 3.11+.
   Moving the sidecar to 3.11 (PYTHON_VERSION, a new venv, re-checking the
   pinned packages) would remove the workaround.
+
+================================================================================
+2026-11-13 — Workstation kitchen (scaling_stations), separate practice kitchen,
+             no automatic restarts
+================================================================================
+
+[feature] The rounds now use the pots x order sweep's current kitchen: fork
+      commit 0fb43d3 (pushed to origin/scaling on 2026-11-12, after our deploy
+      of 3813f07) replaced scaling_kitchen + "nearest" with scaling_stations
+      (ten identical workstations, onion pile / pot slot / plate pile, a
+      delivery cell two steps away; 21 x 3 interior) and "balanced" pot
+      placement (the most centred, left-right symmetric slots: P=1 (11,0);
+      P=2 (11,0), (11,4); P=5 (7,0), (11,0), (15,0), (7,4), (15,4)). Why:
+      in the first Prolific pilot (2026-11-13, scaling_kitchen + nearest),
+      every pot sat next to the piles at the side walls, so the work happened
+      in one strip of cells: 5-9% of moves were blocked by another cook, cooks
+      stood side by side 8-19% of the time, and about half of all cook-steps
+      were on 4 cells (left column x=1). In scaling_stations piles and
+      delivery cells are at every station and the middle row is free for
+      passing; only trips to a pot converge. pot_placement now takes
+      "balanced" | "spread" ("nearest" no longer exists in the fork and is
+      rejected; default spread).
+      Files: deploy/versions.env (0fb43d3), sidecar/schemas.py,
+      sidecar/overcooked_task.py, server/src/studyConfig.ts (POT_PLACEMENT
+      balanced | spread), server/src/game/sidecarClient.ts, shared/types.ts,
+      server/studies/example.env
+
+[feature] Practice in a kitchen the rounds don't use (PRACTICE_LAYOUT=
+      cramped_room, its own single pot), with the study's 1-onion recipe, so
+      participants learn to make a soup without seeing the study kitchen
+      before round 1. Instructions and practice intro say the practice kitchen
+      is small and the team kitchen looks different.
+      Files: client/src/scripts/expTimeline.ts (settings on the server)
+
+[feature] The kitchen is sized from the window width (page up to 1280 px minus
+      the side panel), so the 23-cell scaling_stations gets 37 px tiles at
+      1280 px instead of 31 px at the old 720 px cap; follows resizes.
+      Files: client/src/components/ui/GameBoard/OvercookedCanvas.tsx
+
+[bug] Ubuntu's daily unattended upgrade (apt-daily-upgrade, needrestart)
+      restarted tandem-server and tandem-sidecar on 2026-11-13 at 06:15 UTC; in
+      a session that would end every game in progress. needrestart now never
+      restarts the Tandem services (/etc/needrestart/conf.d/tandem.conf,
+      installed by setup.sh and update.sh); updated libraries take effect at
+      the next deliberate restart. Other services (caddy, ssh, ...) restart as
+      before.
+      Files: deploy/needrestart-tandem.conf (new), deploy/lib.sh
+      (install_system_config), deploy/setup.sh, deploy/update.sh,
+      deploy/README.md
+
+[test] sidecar/test_overcooked.py: sweep tests moved to scaling_stations +
+      balanced (pot sets for P = 1, 2, 5, 10 as in the sweep README; every
+      station keeps its piles; 12 delivery cells; spawns (11,2), (1,1), (21,1);
+      too many pots (11) and "nearest" rejected; a scripted cook from the
+      centre serves a soup on step 36 and the order of 1 ends the episode;
+      cook time sets the timer) and a practice-kitchen test (cramped_room with
+      the 1-onion recipe): 26 sidecar tests pass, incl. MPE.
+      server/test/rounds.js: rounds in scaling_stations with balanced pots,
+      practice in cramped_room (attempt ends on the serving step), and
+      POT_PLACEMENT=nearest now stops the server: 28 checks pass. test:all:
+      all 11 suites pass. needrestart rule: Perl syntax OK; it exempts
+      tandem-server / tandem-sidecar and nothing else. Browser walkthrough
+      (Chrome, 1280 px): practice in cramped_room played with the keyboard
+      (passes), rounds in scaling_stations (23 x 5 board, 37 px tiles, no
+      horizontal scroll, 5 balanced pots in the p5 round), no page errors.
+      tsc, eslint (changed files) clean.
+
+KNOWN ISSUES (open, additions)
+- With 1 pot, every soup still goes through the one cell in front of it (true
+  in any layout); the sweep covers this with its collisions-off runs.
+- The first pilot (2026-11-13) played scaling_kitchen + nearest: not
+  comparable with scaling_stations runs (sweep README).

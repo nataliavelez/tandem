@@ -2,14 +2,15 @@
 Overcooked for Tandem: JaxMARL's OvercookedV2 engine (any number of agents)
 set to onion soup -- one ingredient, the pot starts cooking as soon as it is
 full, full observability. Runs on the lab's JaxMARL fork (deploy/versions.env),
-which adds the scaling-sweep options: number of pots and their placement, pot
+which adds the scaling-sweep options: number of pots and their placement
+("spread", or "balanced" for scaling_stations' interchangeable pot slots), pot
 cooking time, recipe size (onions per soup), order size (the episode ends once
 that many soups are served) and collisions.
 
 - Layouts: text files in sidecar/layouts/<name>.txt (format in
   layouts/open_room.txt; spawns marked a-j, filled in letter order, so one
   layout serves groups of 1..N), or else a layout built into JaxMARL (e.g.
-  scaling_kitchen, the sweep's kitchen), whose agents are placed by
+  scaling_stations, the pots x order sweep's kitchen), whose agents are placed by
   Layout.with_num_agents exactly as in the sweep.
 - The static grid sent to the client is read from the env (after pots are
   added), so it always matches the game.
@@ -147,7 +148,7 @@ def load_layout(name: str, num_agents: int) -> Tuple[Layout, bool]:
 
 
 def make_env(layout: Layout, max_steps: int, *, num_agents: int, agents_placed: bool,
-             num_pots: Optional[int] = None, pot_placement: str = "nearest",
+             num_pots: Optional[int] = None, pot_placement: str = "spread",
              pot_cook_time: Optional[int] = None, recipe_size: int = 3,
              order_size: Optional[int] = None, no_collision: bool = False) -> OvercookedV2:
     """Raises LayoutError if the layout can't take these settings (e.g. too many pots or agents)."""

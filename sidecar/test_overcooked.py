@@ -179,9 +179,10 @@ def test_ten_cooks_random_play():
 
 # ---- The scaling sweep's kitchen and settings (lab fork) ----
 
-SWEEP = dict(layout="scaling_kitchen", recipe_size=1, pot_placement="nearest")
-# Pot cells in the order the sweep's "nearest" placement adds them
-NEAREST_POTS = [(1, 0), (10, 0), (0, 1), (11, 1), (2, 0), (9, 0), (1, 6), (10, 6), (0, 5), (11, 5)]
+SWEEP = dict(layout="scaling_stations", recipe_size=1, pot_placement="balanced")
+# The sweep's "balanced" pot sets (x, y) in scaling_stations (README)
+BALANCED_POTS = {1: [(11, 0)], 2: [(11, 0), (11, 4)], 5: [(7, 0), (11, 0), (15, 0), (7, 4), (15, 4)]}
+SLOTS = [(x, y) for y in (0, 4) for x in (3, 7, 11, 15, 19)]
 
 def pots_in(rows):
     return sorted((x, y) for y, r in enumerate(rows) for x, c in enumerate(r) if c == "P")
@@ -190,13 +191,15 @@ def test_sweep_kitchen_layout_pots_and_spawns():
     for P in (1, 2, 5, 10):
         spec = post("/env/spec", env_id=create(N=3, horizon=1500, num_pots=P, pot_cook_time=20, order_size=10, **SWEEP)).json()
         rows = spec["layout"]["rows"]
-        assert (spec["layout"]["width"], spec["layout"]["height"]) == (12, 7)
-        assert pots_in(rows) == sorted(NEAREST_POTS[:P]), (P, rows)
-        assert spec["num_pots"] == P and spec["pot_placement"] == "nearest"
-        # Piles, delivery and plates as in the sweep README (onion pile drawn as 'O')
-        assert [r[0] for r in rows[2:5]] == ["O", "X", "B"] and [r[-1] for r in rows[2:5]] == ["O", "X", "B"]
-    # Agents placed by Layout.with_num_agents, as in the sweep
-    assert spec["layout"]["spawns"] == [[5, 3], [10, 1], [1, 1]]
+        assert (spec["layout"]["width"], spec["layout"]["height"]) == (23, 5)
+        assert pots_in(rows) == sorted(BALANCED_POTS.get(P, SLOTS)), (P, rows)
+        assert spec["num_pots"] == P and spec["pot_placement"] == "balanced"
+        # Every station keeps its onion pile and plate pile; unused pot slots are counters
+        for x, y in SLOTS:
+            assert rows[y][x - 1] == "O" and rows[y][x + 1] == "B" and rows[y][x] in "PW"
+        assert sum(r.count("X") for r in rows) == 12
+    # Agents placed by Layout.with_num_agents, as in the sweep: centre, then farthest cells
+    assert spec["layout"]["spawns"] == [[11, 2], [1, 1], [21, 1]]
     assert spec["recipes"] == [[0]] and spec["recipe_size"] == 1 and spec["order_size"] == 10
     assert spec["pot_cook_time"] == 20 and spec["no_collision"] is False and spec["max_steps"] == 1500
 
@@ -207,14 +210,17 @@ def test_sweep_settings_change_the_hash():
     assert h(num_pots=1, pot_cook_time=5) == h(num_pots=1, pot_cook_time=5)
 
 def test_too_many_pots_or_unknown_settings_rejected():
-    assert post("/env/create", task="overcooked", num_agents=3, num_pots=30, **SWEEP).status_code == 400
-    assert post("/env/create", task="overcooked", num_agents=3, recipe_size=4, layout="scaling_kitchen").status_code == 422
-    assert post("/env/create", task="overcooked", num_agents=3, order_size=0, layout="scaling_kitchen").status_code == 422
+    # balanced only keeps slots: scaling_stations has 10
+    assert post("/env/create", task="overcooked", num_agents=3, num_pots=11, **SWEEP).status_code == 400
+    assert post("/env/create", task="overcooked", num_agents=3, num_pots=2, pot_placement="nearest",
+                layout="scaling_stations").status_code == 422
+    assert post("/env/create", task="overcooked", num_agents=3, recipe_size=4, layout="scaling_stations").status_code == 422
+    assert post("/env/create", task="overcooked", num_agents=3, order_size=0, layout="scaling_stations").status_code == 422
 
-# One cook in the sweep kitchen (1 pot at (1,0)): onion from (0,2), pot, plate
-# from (0,4), wait for the soup, plate it, serve at (0,3). Serves on step 35.
-ONE_SOUP = [UP, LEFT, LEFT, LEFT, LEFT, LEFT, INTERACT, UP, UP, INTERACT,
-            DOWN, DOWN, DOWN, LEFT, INTERACT, UP, UP, UP, UP] + [INTERACT] * 12 + [DOWN, DOWN, LEFT, INTERACT]
+# One cook from the centre (11,2), pot (11,0): onion from (10,0), pot, plate from
+# (12,0), wait at the pot, serve at (13,0). Serves on step 36 (cook time 20).
+ONE_SOUP = [UP, LEFT, UP, INTERACT, RIGHT, UP, INTERACT, RIGHT, UP, INTERACT, LEFT, UP] + [INTERACT] * 20 + [RIGHT, RIGHT, UP, INTERACT]
+GAME = dict(num_pots=1, pot_placement="balanced", recipe_size=1)
 
 def play(env, seq, game):
     out = []
@@ -222,28 +228,28 @@ def play(env, seq, game):
         r = post("/env/step", env_id=env, actions={"agent_0": a}, include_obs=True)
         assert r.status_code == 200, r.text
         r = r.json()
-        check_round_trip(1, 200, r, "scaling_kitchen", **game)
+        check_round_trip(1, 200, r, "scaling_stations", **game)
         out.append(r)
     return out
 
 def test_order_complete_ends_the_episode():
-    game = dict(num_pots=1, pot_cook_time=20, order_size=1, recipe_size=1, pot_placement="nearest")
-    env = create(N=1, horizon=200, layout="scaling_kitchen", **game)
+    game = dict(GAME, pot_cook_time=20, order_size=1)
+    env = create(N=1, horizon=200, layout="scaling_stations", **game)
     post("/env/reset", env_id=env)
     steps = play(env, ONE_SOUP, game)
-    pot = [i for i in steps[9]["state"]["items"] if i["pos"] == [1, 0]][0]
+    pot = [i for i in steps[6]["state"]["items"] if i["pos"] == [11, 0]][0]
     # 1 onion: cooks at once; the timer counts down on the step the onion goes in
     assert pot["item"] == 4 and pot["timer"] == 20 - 1
-    assert steps[18]["state"]["agents"]["agent_0"]["inv"] == 1  # holding a plate
+    assert steps[9]["state"]["agents"]["agent_0"]["inv"] == 1  # holding a plate
     last = steps[-1]
-    assert last["state"]["delivered"] == 1 and last["state"]["step"] == 35
+    assert last["state"]["delivered"] == 1 and last["state"]["step"] == 36
     assert last["rewards"]["agent_0"] == 20.0 and last["dones"]["__all__"] is True
     assert last["info"]["order_completed"] == [True]
     assert not any(r["dones"]["__all__"] for r in steps[:-1])
 
 def test_order_not_complete_until_order_size():
-    game = dict(num_pots=1, pot_cook_time=20, order_size=2, recipe_size=1, pot_placement="nearest")
-    env = create(N=1, horizon=200, layout="scaling_kitchen", **game)
+    game = dict(GAME, pot_cook_time=20, order_size=2)
+    env = create(N=1, horizon=200, layout="scaling_stations", **game)
     post("/env/reset", env_id=env)
     last = play(env, ONE_SOUP, game)[-1]
     assert last["state"]["delivered"] == 1 and last["dones"]["__all__"] is False
@@ -251,8 +257,14 @@ def test_order_not_complete_until_order_size():
 
 def test_cook_time_sets_the_pot_timer():
     for cook in (5, 60):
-        game = dict(num_pots=1, pot_cook_time=cook, order_size=10, recipe_size=1, pot_placement="nearest")
-        env = create(N=1, horizon=200, layout="scaling_kitchen", **game)
+        game = dict(GAME, pot_cook_time=cook, order_size=10)
+        env = create(N=1, horizon=200, layout="scaling_stations", **game)
         post("/env/reset", env_id=env)
-        st = play(env, ONE_SOUP[:10], game)[-1]["state"]
-        assert [i for i in st["items"] if i["pos"] == [1, 0]][0]["timer"] == cook - 1
+        st = play(env, ONE_SOUP[:7], game)[-1]["state"]
+        assert [i for i in st["items"] if i["pos"] == [11, 0]][0]["timer"] == cook - 1
+
+def test_practice_kitchen_with_the_study_recipe():
+    # Practice uses a file layout the rounds don't use (cramped_room) with the 1-onion recipe
+    spec = post("/env/spec", env_id=create(N=1, horizon=200, layout="cramped_room", recipe_size=1, order_size=1)).json()
+    assert spec["layout"]["rows"] == ["WWPWW", "O   O", "W   W", "WBWXW"] and spec["recipes"] == [[0]]
+    assert spec["num_pots"] == 1 and spec.get("pot_placement") is None and spec["order_size"] == 1

@@ -145,6 +145,7 @@ chmod 750 "$APP/server/studies"
 chmod 640 "$APP"/server/studies/*.env
 
 log "Services"
+install_system_config
 install -m 644 "$APP/deploy/tandem-sidecar.service" /etc/systemd/system/
 install -m 644 "$APP/deploy/tandem-server.service" /etc/systemd/system/
 systemctl daemon-reload

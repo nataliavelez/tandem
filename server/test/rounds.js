@@ -1,18 +1,21 @@
 /*
 Rounds in the scaling-sweep design (Overcooked, lab JaxMARL fork): the sweep's
-kitchen, a different pots / cook-time condition each round (ROUND_CONDITIONS,
+workstation kitchen (scaling_stations, balanced pots), a different pots /
+cook-time condition each round (ROUND_CONDITIONS,
 order rotated across groups), rounds that end when the team has served the
 order (ORDER_SIZE), and the speed bonus. Starts its own servers (port 8095,
 temporary DATA_DIR), so it needs only the sidecar.
 
-  A. Solo practice in the sweep kitchen (PRACTICE_CONDITION p1_c20): the attempt
-     ends as soon as the soup needed to pass is served (order_complete)
+  A. Solo practice in a kitchen the rounds don't use (cramped_room) with the
+     study's 1-onion recipe: the attempt ends as soon as the soup needed to
+     pass is served (order_complete)
   B. Group 1 (one cook): rounds p1_c5, p2_c20, p5_c60 in that order, each with
-     its own kitchen (pots, cook time); rounds 1-2 served → end at step 35,
+     its own kitchen (balanced pots, cook time); rounds 1-2 served → end on the serving step,
      round 3 idle → runs to HORIZON; round results logged; speed bonus,
      orders 2 of 3 on COMPLETION and in study_completed
   C. Group 2 starts at the second condition (rotation)
-  D. Settings errors stop the server: ROUNDS that doesn't match, a bad condition
+  D. Settings errors stop the server: ROUNDS that doesn't match, a bad condition,
+     a bad RECIPE_SIZE, the retired POT_PLACEMENT=nearest
 
 Usage, in server/ (sidecar running, on the lab fork; SIDECAR_URL overrides :8001):
   npm run test:rounds
@@ -28,12 +31,14 @@ const WebSocket = require("ws");
 const PORT = 8095;
 const HORIZON = 250;
 const R = 0, D = 1, L = 2, U = 3, I = 5;
-// One cook from the sweep kitchen's first spawn (5,3): onion (0,2) → pot (1,0) →
-// plate (0,4) → wait at the pot → serve at (0,3) (cook time ≤ 20). The clock runs
+// One cook from scaling_stations' first spawn (11,2): onion (10,0) → pot (11,0) →
+// plate (12,0) → wait at the pot → serve at (13,0) (cook time ≤ 20). The clock runs
 // between presses (no-ops), so the step it is served on varies from run to run.
-const ONE_SOUP = [U, L, L, L, L, L, I, U, U, I, D, D, D, L, I, U, U, U, U, ...Array(12).fill(I), D, D, L, I];
-// Pot cells in the order the sweep's "nearest" placement adds them
-const NEAREST_POTS = [[1, 0], [10, 0], [0, 1], [11, 1], [2, 0]];
+const ONE_SOUP = [U, L, U, I, R, U, I, R, U, I, L, U, ...Array(20).fill(I), R, R, U, I];
+// Practice in cramped_room from spawn (1,1): onion (0,1) → pot (2,0) → plate (1,3) → serve (3,3)
+const PRACTICE_SOUP = [L, I, R, U, I, D, L, D, I, U, R, U, ...Array(20).fill(I), D, R, D, I];
+// The sweep's "balanced" pot sets in scaling_stations
+const BALANCED_POTS = { 1: [[11, 0]], 2: [[11, 0], [11, 4]], 5: [[7, 0], [11, 0], [15, 0], [7, 4], [15, 4]] };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(cond, timeoutMs = 15000) {
@@ -47,10 +52,10 @@ const tmp = (name) => fs.mkdtempSync(path.join(os.tmpdir(), `tandem-rounds-${nam
 
 const SETTINGS = {
   STUDY_CONFIG: "test/test.env", PORT: String(PORT),
-  GAME: "overcooked", LAYOUT: "scaling_kitchen", REQUIRED_PLAYERS: "1", MIN_GROUP_SIZE: "1",
+  GAME: "overcooked", LAYOUT: "scaling_stations", REQUIRED_PLAYERS: "1", MIN_GROUP_SIZE: "1",
   ROUNDS: "", HORIZON: String(HORIZON), TICK_MS: "25",
   ROUND_CONDITIONS: "p1_c5,p2_c20,p5_c60", CONDITION_ORDER: "rotate",
-  ORDER_SIZE: "1", RECIPE_SIZE: "1", POT_PLACEMENT: "nearest", NO_COLLISION: "false",
+  ORDER_SIZE: "1", RECIPE_SIZE: "1", POT_PLACEMENT: "balanced", NO_COLLISION: "false",
   PRACTICE: "false", BONUS_PER_SOUP: "", BONUS_SPEED_PER_ROUND: "0.50", BONUS_MAX: "2",
   COMPLETION_URL: "https://example.test/complete?cc=DONE",
 };
@@ -91,17 +96,17 @@ async function press(c, action) {
 }
 
 const pots = (spec) => spec.layout.rows.flatMap((row, y) => [...row].flatMap((ch, x) => (ch === "P" ? [[x, y]] : [])));
-const samePots = (spec, n) => JSON.stringify(pots(spec).sort()) === JSON.stringify(NEAREST_POTS.slice(0, n).sort());
+const samePots = (spec, n) => JSON.stringify(pots(spec).sort()) === JSON.stringify(BALANCED_POTS[n].slice().sort());
 const readLog = (dir, suffix) => fs.readdirSync(dir).filter((f) => f.endsWith(suffix))
   .flatMap((f) => fs.readFileSync(path.join(dir, f), "utf8").trim().split("\n").map(JSON.parse));
 
 /** Play one round: serve a soup (or stay idle) and wait for its TRIAL_END. */
-async function playRound(c, round, serve) {
+async function playRound(c, round, serve, seq = ONE_SOUP) {
   const from = c.states.length; // this round's states come after the earlier rounds'
   c.send({ type: "TRIAL_READY" });
   await waitFor(() => c.all("TRIAL_START").length >= round && c.states.length > from, 20000);
   const spec = c.last("TRIAL_START").spec;
-  if (serve) for (const a of ONE_SOUP) await press(c, a);
+  if (serve) for (const a of seq) await press(c, a);
   await waitFor(() => c.all("TRIAL_END").length >= round, 30000);
   // The step on which the soup was served (null if none was)
   const servedAt = c.states.slice(from).find((s) => s.delivered >= 1)?.step ?? null;
@@ -110,22 +115,22 @@ async function playRound(c, round, serve) {
 const speed = (steps) => 0.5 * (1 - steps / HORIZON);
 
 (async () => {
-  // ================= A. Practice in the sweep kitchen =================
+  // ================= A. Practice in a kitchen the rounds don't use =================
   let dir = tmp("a");
   let srv = startServer(dir, {
-    PRACTICE: "true", PRACTICE_LAYOUT: "scaling_kitchen", PRACTICE_CONDITION: "p1_c20",
+    PRACTICE: "true", PRACTICE_LAYOUT: "cramped_room", PRACTICE_CONDITION: "",
     PRACTICE_HORIZON: "200", PRACTICE_MIN_SOUPS: "1", PRACTICE_TIME_LIMIT_MS: "120000",
   });
   await srv.ready;
   check(srv.out.includes("rounds: p1_c5, p2_c20, p5_c60 (order rotated across groups)"), "startup reports the rounds");
-  check(srv.out.includes("rules: round ends after 1 soups; 1 onion(s) per soup; pots placed nearest; collisions on"), "startup reports the rules");
-  check(srv.out.includes("solo practice: scaling_kitchen p1_c20"), "startup reports the practice kitchen");
+  check(srv.out.includes("rules: round ends after 1 soups; 1 onion(s) per soup; pots placed balanced; collisions on"), "startup reports the rules");
+  check(srv.out.includes("solo practice: cramped_room, 200 steps"), "startup reports the practice kitchen");
   let p = await client("rd_practice");
   p.send({ type: "PRACTICE_JOIN" });
   await waitFor(() => p.last("PRACTICE_STATUS"));
-  const att = await playRound(p, 1, true);
-  check(att.spec.layout.name === "scaling_kitchen" && samePots(att.spec, 1) && att.spec.pot_cook_time === 20 &&
-    att.spec.order_size === 1 && att.spec.recipe_size === 1, "practice: sweep kitchen, 1 pot, cook 20, order of 1, 1-onion soup");
+  const att = await playRound(p, 1, true, PRACTICE_SOUP);
+  check(att.spec.layout.name === "cramped_room" && JSON.stringify(pots(att.spec)) === "[[2,0]]" && att.spec.pot_cook_time === 20 &&
+    att.spec.order_size === 1 && att.spec.recipe_size === 1, "practice: cramped_room (not the study kitchen), 1 pot, cook 20, order of 1, 1-onion soup");
   check(await waitFor(() => p.last("PRACTICE_STATUS")?.passed === true, 5000), "practice: serving the soup passes");
   check(att.servedAt !== null && att.last.step === att.servedAt && att.last.delivered === 1 && att.servedAt < 200,
     `practice: the attempt ends on the step the soup is served (step ${att.last.step}, served ${att.servedAt})`);
@@ -146,14 +151,15 @@ const speed = (steps) => 0.5 * (1 - steps / HORIZON);
   check(a.last("ASSIGN_ROOM")?.roomId === "room_1", "first group → room_1");
 
   const r1 = await playRound(a, 1, true);
-  check(samePots(r1.spec, 1) && r1.spec.pot_cook_time === 5 && r1.spec.num_pots === 1, "round 1: p1_c5 kitchen (1 pot at (1,0), cook 5)");
+  check(r1.spec.layout.name === "scaling_stations" && samePots(r1.spec, 1) && r1.spec.pot_cook_time === 5 && r1.spec.num_pots === 1,
+    "round 1: p1_c5 in scaling_stations (1 pot at (11,0), cook 5)");
   check(r1.servedAt !== null && r1.last.step === r1.servedAt && r1.last.delivered === 1,
     `round 1: order served → ends on that step (step ${r1.last.step}, served ${r1.servedAt})`);
   const r2 = await playRound(a, 2, true);
-  check(samePots(r2.spec, 2) && r2.spec.pot_cook_time === 20, "round 2: p2_c20 kitchen (pots (1,0), (10,0); cook 20)");
+  check(samePots(r2.spec, 2) && r2.spec.pot_cook_time === 20, "round 2: p2_c20 kitchen (pots (11,0), (11,4); cook 20)");
   check(r2.servedAt !== null && r2.last.step === r2.servedAt, `round 2: order served → ends on that step (step ${r2.last.step}, served ${r2.servedAt})`);
   const r3 = await playRound(a, 3, false);
-  check(samePots(r3.spec, 5) && r3.spec.pot_cook_time === 60, "round 3: p5_c60 kitchen (5 nearest pots, cook 60)");
+  check(samePots(r3.spec, 5) && r3.spec.pot_cook_time === 60, "round 3: p5_c60 kitchen (5 balanced pots, cook 60)");
   check(r3.last.step === HORIZON && r3.last.delivered === 0, `round 3: nothing served → runs to HORIZON (step ${r3.last.step})`);
   check(r1.spec.spec_hash !== r2.spec.spec_hash && r2.spec.spec_hash !== r3.spec.spec_hash, "each condition has its own spec_hash");
 
@@ -215,6 +221,9 @@ const speed = (steps) => 0.5 * (1 - steps / HORIZON);
   srv = startServer(dir, { RECIPE_SIZE: "4" });
   await waitFor(() => srv.exited, 20000);
   check(srv.code === 1 && /RECIPE_SIZE must be 1, 2 or 3/.test(srv.out), "a bad RECIPE_SIZE stops the server");
+  srv = startServer(dir, { POT_PLACEMENT: "nearest" });
+  await waitFor(() => srv.exited, 20000);
+  check(srv.code === 1 && /POT_PLACEMENT must be balanced or spread/.test(srv.out), "the retired POT_PLACEMENT=nearest stops the server");
   fs.rmSync(dir, { recursive: true, force: true });
 
   console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
